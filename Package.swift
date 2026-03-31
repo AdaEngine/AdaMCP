@@ -15,7 +15,7 @@ let package = Package(
         .library(name: "AdaMCPPlugin", targets: ["AdaMCPPlugin"])
     ],
     dependencies: [
-        .package(path: "../AdaEngine"),
+        .package(url: "https://github.com/AdaEngine/AdaEngine", branch: "main"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.74.0"),
