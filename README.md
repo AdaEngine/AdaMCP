@@ -5,6 +5,8 @@
 
 `AdaMCP` exposes a live AdaEngine application as an MCP server. It is built for inspection-first workflows: world/entity/resource introspection, render capture, and AdaUI tree inspection with a small set of safe UI actions.
 
+📚 Check [documentation](https://swiftpackageindex.com/AdaEngine/AdaMCP/main/documentation/adamcpcore) to learn more
+
 ## Current platform support 
 
 The important distinction is:
@@ -68,9 +70,3 @@ AdaUI support is intentionally inspection-first. The main flow is:
 4. Re-read the tree or diagnostics to verify the result.
 
 External callers should target nodes by `accessibilityIdentifier`. `runtimeId` is returned in payloads as a session-local helper, but it is not intended to be a durable contract.
-
-## Documentation
-
-- [DocC landing page](./Sources/AdaMCPCore/AdaMCPCore.docc/AdaMCPCore.md)
-- [Getting Started With AdaMCP](./Sources/AdaMCPCore/AdaMCPCore.docc/Getting-Started-With-AdaMCP.md)
-- [AdaUI Inspection and Automation](./Sources/AdaMCPCore/AdaMCPCore.docc/AdaUI-Inspection-and-Automation.md)
