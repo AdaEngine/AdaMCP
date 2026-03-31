@@ -33,7 +33,7 @@ Until the package is published, add it as a local SwiftPM dependency:
 
 ```swift
 dependencies: [
-    .package(path: "../AdaMCP")
+    .package(url: "https://github.com/AdaEngine/AdaMCP", branch: "main")
 ]
 ```
 
@@ -89,5 +89,3 @@ External callers should target nodes by `accessibilityIdentifier`. `runtimeId` i
 - [DocC landing page](./Sources/AdaMCPCore/AdaMCPCore.docc/AdaMCPCore.md)
 - [Getting Started With AdaMCP](./Sources/AdaMCPCore/AdaMCPCore.docc/Getting-Started-With-AdaMCP.md)
 - [AdaUI Inspection and Automation](./Sources/AdaMCPCore/AdaMCPCore.docc/AdaUI-Inspection-and-Automation.md)
-
-Swift Package Index configuration lives in [`./.spi.yml`](./.spi.yml).

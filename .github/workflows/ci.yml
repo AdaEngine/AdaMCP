@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: macos-15
+    env:
+      ADAENGINE_SKIP_WEBGPU_PLUGINS: "1"
+    steps:
+      - name: Checkout AdaMCP
+        uses: actions/checkout@v4
+        with:
+          path: AdaMCP
+
+      - name: Checkout AdaEngine
+        uses: actions/checkout@v4
+        with:
+          repository: AdaEngine/AdaEngine
+          path: AdaEngine
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
+      - name: Swift Version
+        run: swift --version
+
+      - name: Resolve Packages
+        working-directory: AdaMCP
+        run: swift package resolve
+
+      - name: Run Tests
+        working-directory: AdaMCP
+        run: swift test --parallel
+
+  build-release:
+    name: Build Release
+    runs-on: macos-15
+    env:
+      ADAENGINE_SKIP_WEBGPU_PLUGINS: "1"
+    steps:
+      - name: Checkout AdaMCP
+        uses: actions/checkout@v4
+        with:
+          path: AdaMCP
+
+      - name: Checkout AdaEngine
+        uses: actions/checkout@v4
+        with:
+          repository: AdaEngine/AdaEngine
+          path: AdaEngine
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
+      - name: Build Release
+        working-directory: AdaMCP
+        run: swift build -c release
