@@ -13,6 +13,7 @@ public struct MCPPlugin: Plugin {
         var httpController: AdaMCPHTTPServerController?
         var stdioController: AdaMCPStdioServerController?
         var renderCaptureService: RenderCaptureService?
+        var traceRecorder: AdaMCPTraceRecorder?
     }
 
     private let configuration: MCPServerConfiguration
@@ -33,6 +34,15 @@ public struct MCPPlugin: Plugin {
             captureOverride: configuration.captureOverride
         )
         state.renderCaptureService = renderCaptureService
+        if let activeRecorder = AdaMCPTraceRecorder.activeGlobalRecorder() {
+            state.traceRecorder = activeRecorder
+        } else if let traceRecorder = configuration.traceRecorder {
+            if traceRecorder.installAsGlobalTracerIfPossible() {
+                state.traceRecorder = traceRecorder
+            } else {
+                state.logger.warning("AdaMCP trace recorder could not install because InstrumentationSystem already has a non-AdaMCP instrument")
+            }
+        }
 
         app.insertResource(state.runtimeResource)
         app.insertResource(renderCaptureService)
@@ -53,6 +63,7 @@ public struct MCPPlugin: Plugin {
             appWorlds: appWorlds,
             registry: state.registry,
             renderCaptureService: renderCaptureService,
+            traceRecorder: state.traceRecorder,
             logger: state.logger
         )
         if configuration.enableHTTP {

@@ -166,6 +166,7 @@ public enum AdaMCPError: LocalizedError {
     case notInspectable(String)
     case invalidResourceURI(String)
     case screenshotUnavailable(String)
+    case tracingUnavailable
     case typeMismatch(expected: String)
     case uiUnavailable
     case uiWindowNotFound(Int)
@@ -196,6 +197,8 @@ public enum AdaMCPError: LocalizedError {
             return "Unsupported MCP resource URI '\(uri)'."
         case .screenshotUnavailable(let reason):
             return reason
+        case .tracingUnavailable:
+            return "AdaMCP tracing is unavailable in the current runtime."
         case .typeMismatch(let expected):
             return "Failed to serialize value as expected type '\(expected)'."
         case .uiUnavailable:
@@ -283,6 +286,8 @@ public extension AdaMCPError {
                 message: reason,
                 details: nil
             )
+        case .tracingUnavailable:
+            return .init(code: "tracing_unavailable", message: self.errorDescription ?? "", details: nil)
         case .typeMismatch(let expected):
             return .init(
                 code: "type_mismatch",

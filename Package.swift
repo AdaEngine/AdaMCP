@@ -16,6 +16,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/AdaEngine/AdaEngine", branch: "main"),
+        .package(url: "https://github.com/apple/swift-distributed-tracing", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.74.0"),
@@ -26,6 +27,8 @@ let package = Package(
             name: "AdaMCPCore",
             dependencies: [
                 .product(name: "AdaEngine", package: "AdaEngine"),
+                .product(name: "InMemoryTracing", package: "swift-distributed-tracing"),
+                .product(name: "Tracing", package: "swift-distributed-tracing"),
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log")
             ]
@@ -57,6 +60,8 @@ let package = Package(
                 "AdaMCPServer",
                 "AdaMCPPlugin",
                 .product(name: "AdaEngine", package: "AdaEngine"),
+                .product(name: "InMemoryTracing", package: "swift-distributed-tracing"),
+                .product(name: "Tracing", package: "swift-distributed-tracing"),
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "SystemPackage", package: "swift-system")
             ],

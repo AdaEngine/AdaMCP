@@ -14,6 +14,7 @@ public struct MCPServerConfiguration: Sendable {
     public let instructions: String?
     public let registerTypes: (@MainActor (MCPIntrospectionRegistry) -> Void)?
     public let captureOverride: RenderCaptureService.CaptureOverride?
+    public let traceRecorder: AdaMCPTraceRecorder?
 
     public init(
         enableHTTP: Bool = true,
@@ -25,7 +26,8 @@ public struct MCPServerConfiguration: Sendable {
         serverVersion: String = "0.1.0",
         instructions: String? = "Inspect live AdaEngine worlds, entities, resources, assets, and render captures.",
         registerTypes: (@MainActor (MCPIntrospectionRegistry) -> Void)? = nil,
-        captureOverride: RenderCaptureService.CaptureOverride? = nil
+        captureOverride: RenderCaptureService.CaptureOverride? = nil,
+        traceRecorder: AdaMCPTraceRecorder? = AdaMCPTraceRecorder()
     ) {
         self.enableHTTP = enableHTTP
         self.enableStdio = enableStdio
@@ -37,6 +39,7 @@ public struct MCPServerConfiguration: Sendable {
         self.instructions = instructions
         self.registerTypes = registerTypes
         self.captureOverride = captureOverride
+        self.traceRecorder = traceRecorder
     }
 }
 
@@ -46,18 +49,21 @@ public final class AdaMCPRuntime {
     private let registry: MCPIntrospectionRegistry
     private let renderCaptureService: RenderCaptureService
     private let uiInspectionService: AdaUIInspectionService
+    private let traceRecorder: AdaMCPTraceRecorder?
     private let logger: Logger
 
     public init(
         appWorlds: AppWorlds,
         registry: MCPIntrospectionRegistry,
         renderCaptureService: RenderCaptureService,
+        traceRecorder: AdaMCPTraceRecorder? = nil,
         logger: Logger = Logger(label: "org.adaengine.mcp.runtime")
     ) {
         self.appWorlds = appWorlds
         self.registry = registry
         self.renderCaptureService = renderCaptureService
         self.uiInspectionService = AdaUIInspectionService(appWorlds: appWorlds)
+        self.traceRecorder = traceRecorder
         self.logger = logger
     }
 
@@ -210,6 +216,34 @@ public final class AdaMCPRuntime {
                     "pauseBeforeCapture": .object(["type": "boolean"])
                 ]),
                 annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+            ),
+            Tool(
+                name: "trace.list_spans",
+                description: "List finished AdaEngine tracing spans captured by AdaMCP.",
+                inputSchema: Self.objectSchema(properties: [
+                    "traceId": .object(["type": "string"]),
+                    "nameContains": .object(["type": "string"]),
+                    "limit": .object(["type": "integer"]),
+                    "clearAfterRead": .object(["type": "boolean"])
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false)
+            ),
+            Tool(
+                name: "trace.export_otlp",
+                description: "Export finished AdaEngine tracing spans as OpenTelemetry OTLP JSON.",
+                inputSchema: Self.objectSchema(properties: [
+                    "traceId": .object(["type": "string"]),
+                    "nameContains": .object(["type": "string"]),
+                    "limit": .object(["type": "integer"]),
+                    "clearAfterExport": .object(["type": "boolean"])
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false)
+            ),
+            Tool(
+                name: "trace.clear",
+                description: "Clear finished tracing spans captured by AdaMCP.",
+                inputSchema: Self.objectSchema(),
+                annotations: .init(readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false)
             ),
             Tool(
                 name: "ui.list_windows",
@@ -389,6 +423,18 @@ public final class AdaMCPRuntime {
                 uri: "ada://ui/windows",
                 description: "Live AdaUI window index.",
                 mimeType: "application/json"
+            ),
+            MCP.Resource(
+                name: "Trace Spans",
+                uri: "ada://traces/spans",
+                description: "Finished AdaEngine tracing spans captured by AdaMCP.",
+                mimeType: "application/json"
+            ),
+            MCP.Resource(
+                name: "Trace OTLP Export",
+                uri: "ada://traces/otlp",
+                description: "Finished AdaEngine tracing spans as OpenTelemetry OTLP JSON.",
+                mimeType: "application/json"
             )
         ]
 
@@ -454,6 +500,13 @@ public final class AdaMCPRuntime {
                 title: "UI Node Snapshot",
                 description: "AdaUI node snapshot by window identifier and node selector.",
                 mimeType: "application/json"
+            ),
+            MCP.Resource.Template(
+                uriTemplate: "ada://traces/{format}",
+                name: "Trace Export",
+                title: "Trace Export",
+                description: "Trace export by format: spans or otlp.",
+                mimeType: "application/json"
             )
         ]
     }
@@ -492,6 +545,12 @@ public final class AdaMCPRuntime {
                 payload = try await self.stepFramePayload(frames: arguments["frames"]?.intValue ?? 1)
             case "render.capture_screenshot":
                 payload = try await self.captureScreenshotPayload(arguments: arguments)
+            case "trace.list_spans":
+                payload = try self.traceSpansPayload(arguments: arguments)
+            case "trace.export_otlp":
+                payload = try self.traceOTLPPayload(arguments: arguments)
+            case "trace.clear":
+                payload = try self.traceClearPayload()
             case "ui.list_windows":
                 payload = try self.uiListWindowsPayload()
             case "ui.get_window":
@@ -556,6 +615,8 @@ public final class AdaMCPRuntime {
             payload = try self.typeListPayload(kind: kind)
         case "ui":
             payload = try self.uiResourcePayload(url: url, uri: uri)
+        case "traces":
+            payload = try self.traceResourcePayload(url: url, uri: uri)
         default:
             throw AdaMCPError.invalidResourceURI(uri)
         }
@@ -771,6 +832,32 @@ public final class AdaMCPRuntime {
             refreshFrame: true
         )
         return try Value(result)
+    }
+
+    private func traceSpansPayload(arguments: [String: Value]) throws -> Value {
+        guard let traceRecorder else {
+            throw AdaMCPError.tracingUnavailable
+        }
+        return traceRecorder.spansPayload(arguments: arguments)
+    }
+
+    private func traceOTLPPayload(arguments: [String: Value]) throws -> Value {
+        guard let traceRecorder else {
+            throw AdaMCPError.tracingUnavailable
+        }
+        return traceRecorder.otlpPayload(arguments: arguments)
+    }
+
+    private func traceClearPayload() throws -> Value {
+        guard let traceRecorder else {
+            throw AdaMCPError.tracingUnavailable
+        }
+        let clearedCount = traceRecorder.finishedSpanCount
+        traceRecorder.clearFinishedSpans()
+        return .object([
+            "clearedSpanCount": .int(clearedCount),
+            "activeSpanCount": .int(traceRecorder.activeSpanCount)
+        ])
     }
 
     private func uiListWindowsPayload() throws -> Value {
@@ -1052,6 +1139,22 @@ public final class AdaMCPRuntime {
                     selector: try self.parseUINodeRef(nodeRef)
                 )
             )
+        default:
+            throw AdaMCPError.invalidResourceURI(uri)
+        }
+    }
+
+    private func traceResourcePayload(url: URL, uri: String) throws -> Value {
+        let parts = url.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard let format = parts.first else {
+            throw AdaMCPError.invalidResourceURI(uri)
+        }
+
+        switch format {
+        case "spans":
+            return try self.traceSpansPayload(arguments: [:])
+        case "otlp":
+            return try self.traceOTLPPayload(arguments: [:])
         default:
             throw AdaMCPError.invalidResourceURI(uri)
         }

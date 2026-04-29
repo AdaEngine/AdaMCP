@@ -2,8 +2,10 @@
 import AdaMCPCore
 import AdaMCPServer
 import Foundation
+import InMemoryTracing
 import MCP
 import Testing
+import Tracing
 
 #if canImport(System)
 import System
@@ -281,6 +283,50 @@ struct AdaMCPTests {
         try? serverToClientWrite.close()
     }
 
+    @Test("Runtime exports captured tracing spans as OTLP JSON")
+    func runtimeExportsTracingSpansAsOTLPJSON() async throws {
+        let recorder = AdaMCPTraceRecorder(
+            tracer: InMemoryTracer(idGenerator: .incrementing),
+            serviceName: "adamcp-tests",
+            scopeName: "AdaMCPTests"
+        )
+        let span = recorder.tracer.startSpan("AppWorlds.update")
+        span.attributes["world.name"] = "Main"
+        span.addEvent("scheduler.started")
+        span.end()
+
+        let fixture = self.makeFixture(traceRecorder: recorder)
+
+        let spansResult = await fixture.runtime.callTool(name: "trace.list_spans", arguments: [:])
+        let spansPayload = try self.decodeToolPayload(spansResult)
+        let spans = spansPayload.objectValue?["spans"]?.arrayValue ?? []
+        #expect(spans.count == 1)
+        #expect(spans.first?.objectValue?["name"]?.stringValue == "AppWorlds.update")
+        #expect(spans.first?.objectValue?["attributes"]?.objectValue?["world.name"]?.stringValue == "Main")
+
+        let otlpResult = await fixture.runtime.callTool(name: "trace.export_otlp", arguments: [:])
+        let otlpPayload = try self.decodeToolPayload(otlpResult)
+        let resourceSpans = otlpPayload.objectValue?["resourceSpans"]?.arrayValue ?? []
+        let scopeSpans = resourceSpans.first?.objectValue?["scopeSpans"]?.arrayValue ?? []
+        let otlpSpans = scopeSpans.first?.objectValue?["spans"]?.arrayValue ?? []
+        let otlpSpan = try #require(otlpSpans.first?.objectValue)
+        #expect(otlpSpan["name"]?.stringValue == "AppWorlds.update")
+        #expect(otlpSpan["kind"]?.stringValue == "SPAN_KIND_INTERNAL")
+        #expect(otlpSpan["traceId"]?.stringValue == "trace-1")
+        #expect(otlpSpan["spanId"]?.stringValue == "span-1")
+
+        let attributes = otlpSpan["attributes"]?.arrayValue ?? []
+        #expect(
+            attributes.contains {
+                $0.objectValue?["key"]?.stringValue == "world.name"
+                    && $0.objectValue?["value"]?.objectValue?["stringValue"]?.stringValue == "Main"
+            }
+        )
+
+        let events = otlpSpan["events"]?.arrayValue ?? []
+        #expect(events.first?.objectValue?["name"]?.stringValue == "scheduler.started")
+    }
+
     @Test("Runtime exposes AdaUI inspection and safe actions")
     func runtimeInspectsAdaUIAndPerformsActions() async throws {
         let fixture = self.makeUIFixture()
@@ -421,7 +467,7 @@ struct AdaMCPTests {
         #expect(missingPayload.objectValue?["code"]?.stringValue == "ui_node_not_found")
     }
 
-    private func makeFixture() -> (runtime: AdaMCPRuntime, player: Entity) {
+    private func makeFixture(traceRecorder: AdaMCPTraceRecorder? = nil) -> (runtime: AdaMCPRuntime, player: Entity) {
         Transform.registerComponent()
         InspectableSettings.registerResource()
         HiddenResource.registerResource()
@@ -461,7 +507,8 @@ struct AdaMCPTests {
         let runtime = AdaMCPRuntime(
             appWorlds: appWorlds,
             registry: registry,
-            renderCaptureService: captureService
+            renderCaptureService: captureService,
+            traceRecorder: traceRecorder
         )
         return (runtime, player)
     }
