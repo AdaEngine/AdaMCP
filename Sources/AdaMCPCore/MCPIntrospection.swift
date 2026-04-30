@@ -172,6 +172,7 @@ public enum AdaMCPError: LocalizedError {
     case uiWindowNotFound(Int)
     case uiNodeNotFound(String)
     case uiNodeAmbiguous(selector: String, candidates: [UINodeSummary])
+    case uiNodeNotVisible(String)
     case uiScrollContainerNotFound(String)
     case uiNoFocusableNode(String)
 
@@ -209,6 +210,8 @@ public enum AdaMCPError: LocalizedError {
             return "UI node was not found for selector '\(selector)'."
         case .uiNodeAmbiguous(let selector, _):
             return "UI selector '\(selector)' matched multiple nodes."
+        case .uiNodeNotVisible(let selector):
+            return "UI node for selector '\(selector)' has no visible pixels in the captured screenshot."
         case .uiScrollContainerNotFound(let selector):
             return "No scroll container ancestor was found for selector '\(selector)'."
         case .uiNoFocusableNode(let selector):
@@ -316,6 +319,12 @@ public extension AdaMCPError {
                     "selector": .string(selector),
                     "candidates": (try? Value(candidates)) ?? .array([])
                 ]
+            )
+        case .uiNodeNotVisible(let selector):
+            return .init(
+                code: "ui_node_not_visible",
+                message: self.errorDescription ?? "",
+                details: ["selector": .string(selector)]
             )
         case .uiScrollContainerNotFound(let selector):
             return .init(

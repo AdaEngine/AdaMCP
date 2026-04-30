@@ -355,11 +355,68 @@ struct AdaMCPTests {
         let foundNodePayload = try self.decodeToolPayload(foundNodeResult)
         let foundNodes = foundNodePayload.objectValue?["nodes"]?.arrayValue ?? []
         #expect(foundNodes.count == 1)
+        #expect(foundNodes.first?.objectValue?["accessibilityIdentifier"]?.stringValue == "button.first")
         let primaryAbsoluteFrame = try #require(foundNodes.first?.objectValue?["absoluteFrame"]?.objectValue)
         let primaryOrigin = try #require(primaryAbsoluteFrame["origin"]?.objectValue)
         let primarySize = try #require(primaryAbsoluteFrame["size"]?.objectValue)
         let hitX = self.numericDouble(primaryOrigin["x"]) + self.numericDouble(primarySize["width"]) * 0.5
         let hitY = self.numericDouble(primaryOrigin["y"]) + self.numericDouble(primarySize["height"]) * 0.5
+
+        let scrollNodeResult = await fixture.runtime.callTool(
+            name: "ui.find_nodes",
+            arguments: [
+                "windowId": .int(fixture.window.id.id),
+                "nodeType": .string("ScrollView")
+            ]
+        )
+        let scrollNodePayload = try self.decodeToolPayload(scrollNodeResult)
+        let scrollNodes = scrollNodePayload.objectValue?["nodes"]?.arrayValue ?? []
+        #expect(scrollNodes.count == 1)
+        #expect(scrollNodes.first?.objectValue?["nodeType"]?.stringValue?.contains("ScrollView") == true)
+
+        let buttonViewResult = await fixture.runtime.callTool(
+            name: "ui.find_nodes",
+            arguments: [
+                "windowId": .int(fixture.window.id.id),
+                "viewType": .string("Button")
+            ]
+        )
+        let buttonViewPayload = try self.decodeToolPayload(buttonViewResult)
+        let buttonNodes = buttonViewPayload.objectValue?["nodes"]?.arrayValue ?? []
+        #expect(buttonNodes.count >= 2)
+        #expect(
+            buttonNodes.contains {
+                $0.objectValue?["accessibilityIdentifier"]?.stringValue == "button.first"
+            }
+        )
+
+        let screenshotResult = await fixture.runtime.callTool(
+            name: "ui.capture_node_screenshot",
+            arguments: [
+                "windowId": .int(fixture.window.id.id),
+                "accessibilityIdentifier": .string("button.first")
+            ]
+        )
+        let screenshotPayload = try self.decodeToolPayload(screenshotResult)
+        let croppedPath = try #require(screenshotPayload.objectValue?["path"]?.stringValue)
+        let croppedImage = try Image(contentsOf: URL(fileURLWithPath: croppedPath))
+        let primaryMinX = self.numericDouble(primaryOrigin["x"])
+        let primaryMinY = self.numericDouble(primaryOrigin["y"])
+        let primaryMaxX = primaryMinX + self.numericDouble(primarySize["width"])
+        let primaryMaxY = primaryMinY + self.numericDouble(primarySize["height"])
+        let expectedCropWidth = max(
+            0,
+            min(240, Int(ceil(primaryMaxX))) - max(0, Int(floor(primaryMinX)))
+        )
+        let expectedCropHeight = max(
+            0,
+            min(180, Int(ceil(primaryMaxY))) - max(0, Int(floor(primaryMinY)))
+        )
+        #expect(screenshotPayload.objectValue?["width"]?.intValue == expectedCropWidth)
+        #expect(screenshotPayload.objectValue?["height"]?.intValue == expectedCropHeight)
+        #expect(croppedImage.width == expectedCropWidth)
+        #expect(croppedImage.height == expectedCropHeight)
+        #expect(screenshotPayload.objectValue?["source"]?.objectValue?["path"]?.stringValue == "/tmp/adamcp-ui-test.png")
 
         let hitTestResult = await fixture.runtime.callTool(
             name: "ui.hit_test",
@@ -455,6 +512,17 @@ struct AdaMCPTests {
         let ambiguousPayload = try self.decodeToolPayload(ambiguousResult)
         #expect(ambiguousPayload.objectValue?["code"]?.stringValue == "ui_node_ambiguous")
 
+        let ambiguousScreenshotResult = await fixture.runtime.callTool(
+            name: "ui.capture_node_screenshot",
+            arguments: [
+                "windowId": .int(fixture.window.id.id),
+                "viewType": .string("Button")
+            ]
+        )
+        #expect(ambiguousScreenshotResult.isError == true)
+        let ambiguousScreenshotPayload = try self.decodeToolPayload(ambiguousScreenshotResult)
+        #expect(ambiguousScreenshotPayload.objectValue?["code"]?.stringValue == "ui_node_ambiguous")
+
         let missingResult = await fixture.runtime.callTool(
             name: "ui.tap_node",
             arguments: [
@@ -465,6 +533,14 @@ struct AdaMCPTests {
         #expect(missingResult.isError == true)
         let missingPayload = try self.decodeToolPayload(missingResult)
         #expect(missingPayload.objectValue?["code"]?.stringValue == "ui_node_not_found")
+
+        let missingSelectorResult = await fixture.runtime.callTool(
+            name: "ui.find_nodes",
+            arguments: ["windowId": .int(fixture.window.id.id)]
+        )
+        #expect(missingSelectorResult.isError == true)
+        let missingSelectorPayload = try self.decodeToolPayload(missingSelectorResult)
+        #expect(missingSelectorPayload.objectValue?["code"]?.stringValue == "invalid_arguments")
     }
 
     private func makeFixture(traceRecorder: AdaMCPTraceRecorder? = nil) -> (runtime: AdaMCPRuntime, player: Entity) {
@@ -524,13 +600,15 @@ struct AdaMCPTests {
         let captureService = RenderCaptureService(
             appWorlds: appWorlds,
             captureOverride: { _, _, _, _, _ in
-                ScreenshotCaptureResult(
+                let outputURL = URL(fileURLWithPath: "/tmp/adamcp-ui-test.png")
+                try Image(width: 240, height: 180, color: .white).writePNG(to: outputURL)
+                return ScreenshotCaptureResult(
                     world: AppWorldName.main.rawValue,
                     cameraEntityID: 0,
                     cameraName: "Primary",
-                    width: 1,
-                    height: 1,
-                    path: "/tmp/adamcp-ui-test.png",
+                    width: 240,
+                    height: 180,
+                    path: outputURL.path,
                     timestamp: "2026-03-30T00:00:00Z"
                 )
             }

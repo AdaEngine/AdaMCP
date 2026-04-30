@@ -45,11 +45,11 @@ public struct MCPServerConfiguration: Sendable {
 
 @MainActor
 public final class AdaMCPRuntime {
-    private let appWorlds: AppWorlds
-    private let registry: MCPIntrospectionRegistry
-    private let renderCaptureService: RenderCaptureService
-    private let uiInspectionService: AdaUIInspectionService
-    private let traceRecorder: AdaMCPTraceRecorder?
+    let appWorlds: AppWorlds
+    let registry: MCPIntrospectionRegistry
+    let renderCaptureService: RenderCaptureService
+    let uiInspectionService: AdaUIInspectionService
+    let traceRecorder: AdaMCPTraceRecorder?
     private let logger: Logger
 
     public init(
@@ -281,15 +281,35 @@ public final class AdaMCPRuntime {
             ),
             Tool(
                 name: "ui.find_nodes",
-                description: "Find AdaUI nodes by accessibility identifier or runtime ID.",
+                description: "Find AdaUI nodes by accessibility identifier, runtime ID, node type, or view type.",
                 inputSchema: Self.objectSchema(
                     properties: [
                         "windowId": .object(["type": "integer"]),
                         "accessibilityIdentifier": .object(["type": "string"]),
-                        "runtimeId": .object(["type": "string"])
+                        "runtimeId": .object(["type": "string"]),
+                        "nodeType": .object(["type": "string"]),
+                        "viewType": .object(["type": "string"])
                     ]
                 ),
                 annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+            ),
+            Tool(
+                name: "ui.capture_node_screenshot",
+                description: "Capture the current render output and save a PNG cropped to a selected AdaUI node.",
+                inputSchema: Self.objectSchema(
+                    properties: [
+                        "windowId": .object(["type": "integer"]),
+                        "accessibilityIdentifier": .object(["type": "string"]),
+                        "runtimeId": .object(["type": "string"]),
+                        "nodeType": .object(["type": "string"]),
+                        "viewType": .object(["type": "string"]),
+                        "cameraEntityId": .object(["type": "integer"]),
+                        "cameraName": .object(["type": "string"]),
+                        "pauseBeforeCapture": .object(["type": "boolean"]),
+                        "padding": .object(["type": "number"])
+                    ]
+                ),
+                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
             ),
             Tool(
                 name: "ui.hit_test",
@@ -561,6 +581,8 @@ public final class AdaMCPRuntime {
                 payload = try self.uiGetNodePayload(arguments: arguments)
             case "ui.find_nodes":
                 payload = try self.uiFindNodesPayload(arguments: arguments)
+            case "ui.capture_node_screenshot":
+                payload = try await self.uiCaptureNodeScreenshotPayload(arguments: arguments)
             case "ui.hit_test":
                 payload = try self.uiHitTestPayload(arguments: arguments)
             case "ui.get_layout_diagnostics":
@@ -638,555 +660,6 @@ public final class AdaMCPRuntime {
         return .object(schema)
     }
 
-    private func listWorldsPayload() throws -> Value {
-        let worlds = try appWorlds.allWorldNames().map { worldName -> Value in
-            guard let worldBuilder = appWorlds.getWorldBuilder(by: worldName) else {
-                throw AdaMCPError.worldNotFound(worldName.rawValue)
-            }
-            return self.makeWorldPayload(worldName: worldName.rawValue, world: worldBuilder.main)
-        }
-        return ["worlds": .array(worlds)]
-    }
-
-    private func worldPayload(named worldName: String?) throws -> Value {
-        let resolved = try self.resolveWorld(named: worldName)
-        return self.makeWorldPayload(worldName: resolved.name, world: resolved.world.main)
-    }
-
-    private func entityByIDPayload(arguments: [String: Value]) throws -> Value {
-        guard let entityID = arguments["id"]?.intValue else {
-            throw AdaMCPError.invalidArguments("Argument 'id' is required.")
-        }
-        let worldName = arguments["world"]?.stringValue ?? AppWorldName.main.rawValue
-        return try self.entityPayload(worldName: worldName, entityID: entityID)
-    }
-
-    private func entityByNamePayload(arguments: [String: Value]) throws -> Value {
-        guard let entityName = arguments["name"]?.stringValue, !entityName.isEmpty else {
-            throw AdaMCPError.invalidArguments("Argument 'name' is required.")
-        }
-        let resolved = try self.resolveWorld(named: arguments["world"]?.stringValue)
-        guard let entity = resolved.world.main.getEntityByName(entityName) else {
-            throw AdaMCPError.entityNamedNotFound(world: resolved.name, entityName: entityName)
-        }
-        return try self.makeEntityPayload(worldName: resolved.name, world: resolved.world.main, entity: entity)
-    }
-
-    private func findEntitiesPayload(arguments: [String: Value]) throws -> Value {
-        let resolved = try self.resolveWorld(named: arguments["world"]?.stringValue)
-        let nameQuery = arguments["name"]?.stringValue?.lowercased()
-        let active = arguments["active"]?.boolValue
-        let componentType = arguments["componentType"]?.stringValue
-
-        let entities = try resolved.world.main.getEntities().filter { entity in
-            if let nameQuery, !entity.name.lowercased().contains(nameQuery) {
-                return false
-            }
-            if let active, entity.isActive != active {
-                return false
-            }
-            if let componentType, !resolved.world.main.hasComponent(named: componentType, in: entity.id) {
-                return false
-            }
-            return true
-        }
-        .map { entity in
-            try self.makeEntityPayload(worldName: resolved.name, world: resolved.world.main, entity: entity)
-        }
-
-        return ["entities": .array(entities)]
-    }
-
-    private func entityComponentsPayload(arguments: [String: Value]) throws -> Value {
-        guard let entityID = arguments["entityId"]?.intValue else {
-            throw AdaMCPError.invalidArguments("Argument 'entityId' is required.")
-        }
-        let resolved = try self.resolveWorld(named: arguments["world"]?.stringValue)
-        guard let entity = resolved.world.main.getEntityByID(entityID) else {
-            throw AdaMCPError.entityNotFound(world: resolved.name, entityID: entityID)
-        }
-        let components = try self.inspectComponents(world: resolved.world.main, entity: entity)
-        return ["components": .array(components.payloads), "diagnostics": .array(components.diagnostics)]
-    }
-
-    private func componentPayload(arguments: [String: Value]) throws -> Value {
-        guard let entityID = arguments["entityId"]?.intValue else {
-            throw AdaMCPError.invalidArguments("Argument 'entityId' is required.")
-        }
-        guard let componentType = arguments["componentType"]?.stringValue, !componentType.isEmpty else {
-            throw AdaMCPError.invalidArguments("Argument 'componentType' is required.")
-        }
-        let resolved = try self.resolveWorld(named: arguments["world"]?.stringValue)
-        guard resolved.world.main.getEntityByID(entityID) != nil else {
-            throw AdaMCPError.entityNotFound(world: resolved.name, entityID: entityID)
-        }
-        guard let component = resolved.world.main.getComponent(named: componentType, from: entityID) else {
-            throw AdaMCPError.componentNotFound(
-                world: resolved.name,
-                entityID: entityID,
-                componentType: componentType
-            )
-        }
-        return try self.inspectValue(component)
-    }
-
-    private func listResourcesPayload(arguments: [String: Value]) throws -> Value {
-        let resolved = try self.resolveWorld(named: arguments["world"]?.stringValue)
-        var payloads: [Value] = []
-        var diagnostics: [Value] = []
-
-        for resource in resolved.world.main.getResources() {
-            do {
-                payloads.append(try self.inspectValue(resource))
-            } catch {
-                diagnostics.append(self.diagnosticValue(
-                    code: "not_inspectable",
-                    message: "Resource \(String(reflecting: type(of: resource))) is not inspectable."
-                ))
-            }
-        }
-
-        return ["resources": .array(payloads), "diagnostics": .array(diagnostics)]
-    }
-
-    private func resourcePayload(arguments: [String: Value]) throws -> Value {
-        guard let resourceType = arguments["resourceType"]?.stringValue, !resourceType.isEmpty else {
-            throw AdaMCPError.invalidArguments("Argument 'resourceType' is required.")
-        }
-        let resolved = try self.resolveWorld(named: arguments["world"]?.stringValue)
-        guard let resource = resolved.world.main.getResource(named: resourceType) else {
-            throw AdaMCPError.resourceNotFound(resourceType)
-        }
-        return try self.inspectValue(resource)
-    }
-
-    private func assetFindPayload(arguments: [String: Value]) async throws -> Value {
-        let assets = await AssetsManager.cachedAssets().filter { asset in
-            if let path = arguments["path"]?.stringValue, !asset.assetPath.contains(path) {
-                return false
-            }
-            if let name = arguments["name"]?.stringValue, !asset.assetName.localizedCaseInsensitiveContains(name) {
-                return false
-            }
-            if let type = arguments["type"]?.stringValue, asset.typeName != type {
-                return false
-            }
-            if let assetID = arguments["assetId"]?.stringValue, asset.assetID != assetID {
-                return false
-            }
-            return true
-        }
-        return ["assets": .array(assets.map(self.makeAssetPayload))]
-    }
-
-    private func assetGetPayload(arguments: [String: Value]) async throws -> Value {
-        let assetsValue = try await self.assetFindPayload(arguments: arguments)
-        guard let first = assetsValue.objectValue?["assets"]?.arrayValue?.first else {
-            let query = arguments.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
-            throw AdaMCPError.assetNotFound(query)
-        }
-        return first
-    }
-
-    private func pausePayload(reason: String?) throws -> Value {
-        let control = appWorlds.main.getOrInitRefResource(SimulationControl.self) {
-            SimulationControl()
-        }
-        control.wrappedValue.mode = .paused
-        control.wrappedValue.reason = reason ?? "runtime.pause"
-        control.wrappedValue.pendingStepCount = 0
-        return try Value(control.wrappedValue)
-    }
-
-    private func resumePayload() throws -> Value {
-        let control = appWorlds.main.getOrInitRefResource(SimulationControl.self) {
-            SimulationControl()
-        }
-        control.wrappedValue.mode = .running
-        control.wrappedValue.reason = nil
-        control.wrappedValue.pendingStepCount = 0
-        return try Value(control.wrappedValue)
-    }
-
-    private func stepFramePayload(frames: Int) async throws -> Value {
-        let frameCount = max(frames, 1)
-        let control = appWorlds.main.getOrInitRefResource(SimulationControl.self) {
-            SimulationControl()
-        }
-        control.wrappedValue.mode = .paused
-        control.wrappedValue.reason = "runtime.step_frame"
-        control.wrappedValue.pendingStepCount += frameCount
-
-        for _ in 0..<frameCount {
-            try await appWorlds.update()
-        }
-
-        return try Value(control.wrappedValue)
-    }
-
-    private func captureScreenshotPayload(arguments: [String: Value]) async throws -> Value {
-        let result = try await renderCaptureService.capture(
-            cameraEntityID: arguments["cameraEntityId"]?.intValue,
-            cameraName: arguments["cameraName"]?.stringValue,
-            pauseBeforeCapture: arguments["pauseBeforeCapture"]?.boolValue ?? true,
-            refreshFrame: true
-        )
-        return try Value(result)
-    }
-
-    private func traceSpansPayload(arguments: [String: Value]) throws -> Value {
-        guard let traceRecorder else {
-            throw AdaMCPError.tracingUnavailable
-        }
-        return traceRecorder.spansPayload(arguments: arguments)
-    }
-
-    private func traceOTLPPayload(arguments: [String: Value]) throws -> Value {
-        guard let traceRecorder else {
-            throw AdaMCPError.tracingUnavailable
-        }
-        return traceRecorder.otlpPayload(arguments: arguments)
-    }
-
-    private func traceClearPayload() throws -> Value {
-        guard let traceRecorder else {
-            throw AdaMCPError.tracingUnavailable
-        }
-        let clearedCount = traceRecorder.finishedSpanCount
-        traceRecorder.clearFinishedSpans()
-        return .object([
-            "clearedSpanCount": .int(clearedCount),
-            "activeSpanCount": .int(traceRecorder.activeSpanCount)
-        ])
-    }
-
-    private func uiListWindowsPayload() throws -> Value {
-        ["windows": try Value(self.uiInspectionService.listWindows())]
-    }
-
-    private func uiGetWindowPayload(arguments: [String: Value]) throws -> Value {
-        try Value(self.uiInspectionService.getWindow(windowID: arguments["windowId"]?.intValue))
-    }
-
-    private func uiGetTreePayload(arguments: [String: Value]) throws -> Value {
-        try Value(self.uiInspectionService.getTree(windowID: arguments["windowId"]?.intValue))
-    }
-
-    private func uiGetNodePayload(arguments: [String: Value]) throws -> Value {
-        try Value(
-            self.uiInspectionService.getNode(
-                windowID: arguments["windowId"]?.intValue,
-                selector: try self.resolveUINodeSelector(arguments: arguments)
-            )
-        )
-    }
-
-    private func uiFindNodesPayload(arguments: [String: Value]) throws -> Value {
-        guard let selector = self.resolveOptionalUINodeSelector(arguments: arguments) else {
-            throw AdaMCPError.invalidArguments("Argument 'accessibilityIdentifier' or 'runtimeId' is required.")
-        }
-        let nodes = try self.uiInspectionService.findNodes(
-            windowID: arguments["windowId"]?.intValue,
-            selector: selector
-        )
-        return ["nodes": try Value(nodes)]
-    }
-
-    private func uiHitTestPayload(arguments: [String: Value]) throws -> Value {
-        let x = arguments["x"]?.doubleValue ?? arguments["x"]?.intValue.map(Double.init)
-        let y = arguments["y"]?.doubleValue ?? arguments["y"]?.intValue.map(Double.init)
-        guard let x, let y else {
-            throw AdaMCPError.invalidArguments("Arguments 'x' and 'y' are required.")
-        }
-
-        return try Value(
-            self.uiInspectionService.hitTest(
-                windowID: arguments["windowId"]?.intValue,
-                point: Point(Float(x), Float(y))
-            )
-        )
-    }
-
-    private func uiLayoutDiagnosticsPayload(arguments: [String: Value]) throws -> Value {
-        try Value(
-            self.uiInspectionService.getLayoutDiagnostics(
-                windowID: arguments["windowId"]?.intValue,
-                selector: self.resolveOptionalUINodeSelector(arguments: arguments),
-                subtreeDepth: arguments["subtreeDepth"]?.intValue
-            )
-        )
-    }
-
-    private func uiSetDebugOverlayPayload(arguments: [String: Value]) throws -> Value {
-        guard let rawMode = arguments["mode"]?.stringValue,
-              let mode = UIDebugOverlayMode(rawValue: rawMode) else {
-            throw AdaMCPError.invalidArguments("Argument 'mode' must be one of off, layout_bounds, focused_node, hit_test_target.")
-        }
-        return try Value(
-            self.uiInspectionService.setDebugOverlay(
-                windowID: arguments["windowId"]?.intValue,
-                mode: mode
-            )
-        )
-    }
-
-    private func uiFocusNodePayload(arguments: [String: Value]) throws -> Value {
-        try Value(
-            self.uiInspectionService.focusNode(
-                windowID: arguments["windowId"]?.intValue,
-                selector: try self.resolveUINodeSelector(arguments: arguments)
-            )
-        )
-    }
-
-    private func uiFocusNextPayload(arguments: [String: Value]) throws -> Value {
-        try Value(self.uiInspectionService.focusNext(windowID: arguments["windowId"]?.intValue))
-    }
-
-    private func uiFocusPreviousPayload(arguments: [String: Value]) throws -> Value {
-        try Value(self.uiInspectionService.focusPrevious(windowID: arguments["windowId"]?.intValue))
-    }
-
-    private func uiScrollToNodePayload(arguments: [String: Value]) throws -> Value {
-        try Value(
-            self.uiInspectionService.scrollToNode(
-                windowID: arguments["windowId"]?.intValue,
-                selector: try self.resolveUINodeSelector(arguments: arguments)
-            )
-        )
-    }
-
-    private func uiTapNodePayload(arguments: [String: Value]) throws -> Value {
-        try Value(
-            self.uiInspectionService.tapNode(
-                windowID: arguments["windowId"]?.intValue,
-                selector: try self.resolveUINodeSelector(arguments: arguments)
-            )
-        )
-    }
-
-    private func entityPayload(worldName: String, entityID: Int) throws -> Value {
-        let resolved = try self.resolveWorld(named: worldName)
-        guard let entity = resolved.world.main.getEntityByID(entityID) else {
-            throw AdaMCPError.entityNotFound(world: resolved.name, entityID: entityID)
-        }
-        return try self.makeEntityPayload(worldName: resolved.name, world: resolved.world.main, entity: entity)
-    }
-
-    private func typeListPayload(kind: String) throws -> Value {
-        let typeKind: MCPTypeKind
-        switch kind {
-        case "components":
-            typeKind = .component
-        case "resources":
-            typeKind = .resource
-        case "assets":
-            typeKind = .asset
-        default:
-            throw AdaMCPError.invalidResourceURI("ada://types/\(kind)")
-        }
-        return try Value(registry.descriptors(kind: typeKind))
-    }
-
-    private func resolveWorld(named name: String?) throws -> (name: String, world: AppWorlds) {
-        let worldName = name?.isEmpty == false ? name! : AppWorldName.main.rawValue
-        guard let world = appWorlds.getWorldBuilder(by: AppWorldName(rawValue: worldName)) else {
-            throw AdaMCPError.worldNotFound(worldName)
-        }
-        return (worldName, world)
-    }
-
-    private func makeWorldPayload(worldName: String, world: World) -> Value {
-        let entities = world.getEntities()
-        return .object([
-            "type": "world",
-            "name": .string(worldName),
-            "world": .string(worldName),
-            "summary": .object([
-                "entityCount": .int(entities.count),
-                "activeEntityCount": .int(entities.filter(\.isActive).count),
-                "resourceCount": .int(world.getResources().count)
-            ]),
-            "fields": .object([
-                "id": .string(String(describing: world.id)),
-                "name": .string(world.name ?? worldName)
-            ]),
-            "diagnostics": .array([])
-        ])
-    }
-
-    private func makeEntityPayload(worldName: String, world: World, entity: Entity) throws -> Value {
-        let components = try self.inspectComponents(world: world, entity: entity)
-        return .object([
-            "type": "entity",
-            "id": .int(entity.id),
-            "name": .string(entity.name),
-            "world": .string(worldName),
-            "summary": .object([
-                "isActive": .bool(entity.isActive),
-                "componentCount": .int(entity.components.count),
-                "inspectableComponentCount": .int(components.payloads.count)
-            ]),
-            "fields": .object([
-                "isActive": .bool(entity.isActive)
-            ]),
-            "components": .array(components.payloads),
-            "diagnostics": .array(components.diagnostics)
-        ])
-    }
-
-    private func inspectComponents(
-        world: World,
-        entity: Entity
-    ) throws -> (payloads: [Value], diagnostics: [Value]) {
-        var payloads: [Value] = []
-        var diagnostics: [Value] = []
-
-        for (typeName, component) in world.getComponents(for: entity.id) {
-            do {
-                payloads.append(try self.inspectValue(component))
-            } catch {
-                diagnostics.append(self.diagnosticValue(
-                    code: "not_inspectable",
-                    message: "Component \(typeName) on entity \(entity.id) is not inspectable."
-                ))
-            }
-        }
-
-        return (payloads, diagnostics)
-    }
-
-    private func inspectValue(_ value: Any) throws -> Value {
-        guard let descriptor = registry.descriptor(for: value) else {
-            throw AdaMCPError.notInspectable(String(reflecting: type(of: value)))
-        }
-        guard let serialized = try registry.serialize(value) else {
-            throw AdaMCPError.notInspectable(descriptor.name)
-        }
-        let fields = serialized.objectValue ?? ["value": serialized]
-        return .object([
-            "type": .string(descriptor.name),
-            "kind": .string(descriptor.kind.rawValue),
-            "summary": .object([
-                "fieldCount": .int(fields.count)
-            ]),
-            "fields": .object(fields),
-            "diagnostics": .array([])
-        ])
-    }
-
-    private func makeAssetPayload(_ asset: AssetsManager.CachedAssetInfo) -> Value {
-        let diagnostics: [Value]
-        if registry.descriptor(named: asset.typeName) == nil {
-            diagnostics = [
-                self.diagnosticValue(
-                    code: "unregistered_asset_descriptor",
-                    message: "Asset type \(asset.typeName) has no explicit MCP descriptor."
-                )
-            ]
-        } else {
-            diagnostics = []
-        }
-
-        return .object([
-            "type": .string(asset.typeName),
-            "kind": .string(MCPTypeKind.asset.rawValue),
-            "id": asset.assetID.map(Value.string) ?? .null,
-            "name": .string(asset.assetName),
-            "world": .null,
-            "summary": .object([
-                "isLoaded": .bool(asset.isLoaded),
-                "handleCount": .int(asset.handleCount)
-            ]),
-            "fields": .object([
-                "assetPath": .string(asset.assetPath),
-                "assetName": .string(asset.assetName),
-                "assetID": asset.assetID.map(Value.string) ?? .null,
-                "isLoaded": .bool(asset.isLoaded),
-                "handleCount": .int(asset.handleCount)
-            ]),
-            "diagnostics": .array(diagnostics)
-        ])
-    }
-
-    private func uiResourcePayload(url: URL, uri: String) throws -> Value {
-        let parts = url.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        guard let kind = parts.first else {
-            throw AdaMCPError.invalidResourceURI(uri)
-        }
-
-        switch kind {
-        case "windows":
-            return try self.uiListWindowsPayload()
-        case "window":
-            guard parts.count == 2, let windowID = Int(parts[1]) else {
-                throw AdaMCPError.invalidResourceURI(uri)
-            }
-            return try Value(self.uiInspectionService.getWindow(windowID: windowID))
-        case "tree":
-            guard parts.count == 2, let windowID = Int(parts[1]) else {
-                throw AdaMCPError.invalidResourceURI(uri)
-            }
-            return try Value(self.uiInspectionService.getTree(windowID: windowID))
-        case "node":
-            guard parts.count >= 3, let windowID = Int(parts[1]) else {
-                throw AdaMCPError.invalidResourceURI(uri)
-            }
-            let nodeRef = parts.dropFirst(2).joined(separator: "/")
-            return try Value(
-                self.uiInspectionService.getNode(
-                    windowID: windowID,
-                    selector: try self.parseUINodeRef(nodeRef)
-                )
-            )
-        default:
-            throw AdaMCPError.invalidResourceURI(uri)
-        }
-    }
-
-    private func traceResourcePayload(url: URL, uri: String) throws -> Value {
-        let parts = url.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        guard let format = parts.first else {
-            throw AdaMCPError.invalidResourceURI(uri)
-        }
-
-        switch format {
-        case "spans":
-            return try self.traceSpansPayload(arguments: [:])
-        case "otlp":
-            return try self.traceOTLPPayload(arguments: [:])
-        default:
-            throw AdaMCPError.invalidResourceURI(uri)
-        }
-    }
-
-    private func resolveOptionalUINodeSelector(arguments: [String: Value]) -> UINodeSelector? {
-        if let accessibilityIdentifier = arguments["accessibilityIdentifier"]?.stringValue, !accessibilityIdentifier.isEmpty {
-            return .accessibilityIdentifier(accessibilityIdentifier)
-        }
-        if let runtimeID = arguments["runtimeId"]?.stringValue, !runtimeID.isEmpty {
-            return .runtimeID(runtimeID)
-        }
-        return nil
-    }
-
-    private func resolveUINodeSelector(arguments: [String: Value]) throws -> UINodeSelector {
-        guard let selector = self.resolveOptionalUINodeSelector(arguments: arguments) else {
-            throw AdaMCPError.invalidArguments("Argument 'accessibilityIdentifier' or 'runtimeId' is required.")
-        }
-        return selector
-    }
-
-    private func parseUINodeRef(_ value: String) throws -> UINodeSelector {
-        if value.hasPrefix("accessibility:") {
-            return .accessibilityIdentifier(String(value.dropFirst("accessibility:".count)))
-        }
-        if value.hasPrefix("runtime:") {
-            return .runtimeID(String(value.dropFirst("runtime:".count)))
-        }
-        throw AdaMCPError.invalidResourceURI("ada://ui/node/{windowId}/\(value)")
-    }
-
     private func jsonToolResult(_ payload: Value, isError: Bool = false) throws -> CallTool.Result {
         let text = try self.prettyJSONString(payload)
         return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: isError)
@@ -1204,10 +677,4 @@ public final class AdaMCPRuntime {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private func diagnosticValue(code: String, message: String) -> Value {
-        .object([
-            "code": .string(code),
-            "message": .string(message)
-        ])
-    }
 }

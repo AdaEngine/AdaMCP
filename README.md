@@ -18,7 +18,7 @@ The important distinction is:
 
 - 😳 World, entity, component, resource, and asset inspection.
 - 📸 Screenshot capture for live render output.
-- 💉 AdaUI inspection tools such as `ui.list_windows`, `ui.get_tree`, `ui.get_node`, `ui.find_nodes`, and `ui.hit_test`.
+- 💉 AdaUI inspection tools such as `ui.list_windows`, `ui.get_tree`, `ui.get_node`, `ui.find_nodes`, `ui.capture_node_screenshot`, and `ui.hit_test`.
 - 🧑‍🏫 AdaUI diagnostics and safe actions such as focus traversal, deterministic tap, and scroll-to-node.
 - 📦 MCP resources under `ada://...`, including `ada://ui/windows`, `ada://ui/window/{id}`, `ada://ui/tree/{id}`, and `ada://ui/node/{windowId}/{nodeRef}`.
 
@@ -69,4 +69,4 @@ AdaUI support is intentionally inspection-first. The main flow is:
 3. Apply a limited, deterministic action.
 4. Re-read the tree or diagnostics to verify the result.
 
-External callers should target nodes by `accessibilityIdentifier`. `runtimeId` is returned in payloads as a session-local helper, but it is not intended to be a durable contract.
+External callers should target nodes by `accessibilityIdentifier`. `ui.find_nodes` can also search by `nodeType` or `viewType`, for example to locate all scroll views. `runtimeId` is returned in payloads as a session-local helper, but it is not intended to be a durable contract.

@@ -29,6 +29,51 @@ public struct ScreenshotCaptureResult: Codable, Hashable, Sendable {
     }
 }
 
+public struct ScreenshotCropRect: Codable, Hashable, Sendable {
+    public let x: Int
+    public let y: Int
+    public let width: Int
+    public let height: Int
+
+    public init(x: Int, y: Int, width: Int, height: Int) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+    }
+}
+
+public struct UINodeScreenshotCaptureResult: Codable, Hashable, Sendable {
+    public let windowId: Int
+    public let node: UINodeSnapshot
+    public let source: ScreenshotCaptureResult
+    public let cropRect: ScreenshotCropRect
+    public let width: Int
+    public let height: Int
+    public let path: String
+    public let timestamp: String
+
+    public init(
+        windowId: Int,
+        node: UINodeSnapshot,
+        source: ScreenshotCaptureResult,
+        cropRect: ScreenshotCropRect,
+        width: Int,
+        height: Int,
+        path: String,
+        timestamp: String
+    ) {
+        self.windowId = windowId
+        self.node = node
+        self.source = source
+        self.cropRect = cropRect
+        self.width = width
+        self.height = height
+        self.path = path
+        self.timestamp = timestamp
+    }
+}
+
 @MainActor
 public final class RenderCaptureService: @unchecked Sendable, Resource {
     public typealias CaptureOverride = @MainActor (
@@ -156,6 +201,48 @@ public final class RenderCaptureService: @unchecked Sendable, Resource {
         }
 
         throw AdaMCPError.screenshotUnavailable("No camera available for screenshot capture.")
+    }
+}
+
+extension Image {
+    func adamcpCropped(to cropRect: ScreenshotCropRect) throws -> Image {
+        guard cropRect.width > 0, cropRect.height > 0 else {
+            throw AdaMCPError.screenshotUnavailable("Crop rectangle must have positive dimensions.")
+        }
+        guard cropRect.x >= 0,
+              cropRect.y >= 0,
+              cropRect.x + cropRect.width <= self.width,
+              cropRect.y + cropRect.height <= self.height else {
+            throw AdaMCPError.screenshotUnavailable("Crop rectangle is outside the source screenshot.")
+        }
+
+        let sourceStride = self.adamcpPixelStride
+        let rowByteCount = cropRect.width * sourceStride
+        var croppedData = Data(capacity: rowByteCount * cropRect.height)
+
+        for row in 0..<cropRect.height {
+            let sourceOffset = ((cropRect.y + row) * self.width + cropRect.x) * sourceStride
+            let sourceRange = sourceOffset..<(sourceOffset + rowByteCount)
+            croppedData.append(self.data.subdata(in: sourceRange))
+        }
+
+        return Image(
+            width: cropRect.width,
+            height: cropRect.height,
+            data: croppedData,
+            format: self.format
+        )
+    }
+
+    private var adamcpPixelStride: Int {
+        switch self.format {
+        case .rgba8, .bgra8, .bgra8_sRGB:
+            return 4
+        case .rgb8:
+            return 3
+        case .gray:
+            return 1
+        }
     }
 }
 
