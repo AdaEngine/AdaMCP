@@ -1,10 +1,18 @@
 import AdaMCPCore
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Logging
 import MCP
-@preconcurrency import NIOCore
-@preconcurrency import NIOHTTP1
-@preconcurrency import NIOPosix
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(WinSDK)
+import WinSDK
+#endif
 
 actor EmbeddedHTTPMCPServer {
     struct Configuration: Sendable {
@@ -32,9 +40,9 @@ actor EmbeddedHTTPMCPServer {
     private let serverFactory: ServerFactory
     nonisolated let logger: Logger
 
-    private var eventLoopGroup: MultiThreadedEventLoopGroup?
-    private var channel: Channel?
+    private var listener: FoundationHTTPListener?
     private var sessions: [String: SessionContext] = [:]
+    private var cleanupTask: Task<Void, Never>?
 
     private struct SessionContext {
         let server: Server
@@ -54,66 +62,40 @@ actor EmbeddedHTTPMCPServer {
     }
 
     func start() async throws -> URL {
-        if let channel {
-            return try self.endpointURL(for: channel)
+        if let listener {
+            return try endpointURL(port: listener.port)
         }
 
-        let group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
-        let bootstrap = ServerBootstrap(group: group)
-            .serverChannelOption(ChannelOptions.backlog, value: 256)
-            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-            .childChannelInitializer { channel in
-                channel.pipeline.configureHTTPServerPipeline().flatMap {
-                    channel.pipeline.addHandler(HTTPHandler(app: self))
-                }
-            }
-            .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-            .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 1)
+        let listener = try FoundationHTTPListener(configuration: configuration, app: self, logger: logger)
+        self.listener = listener
+        listener.start()
 
-        let channel = try await bootstrap.bind(
-            host: configuration.host,
-            port: configuration.port
-        ).get()
-        self.eventLoopGroup = group
-        self.channel = channel
-
-        Task {
+        cleanupTask = Task {
             await self.sessionCleanupLoop()
         }
 
-        return try self.endpointURL(for: channel)
+        return try endpointURL(port: listener.port)
     }
 
     func stop() async {
+        cleanupTask?.cancel()
+        cleanupTask = nil
+
         for sessionID in sessions.keys {
             await closeSession(sessionID)
         }
         sessions.removeAll()
 
-        if let channel {
-            try? await channel.close().get()
-            self.channel = nil
-        }
-
-        if let eventLoopGroup {
-            try? await self.shutdownEventLoopGroup(eventLoopGroup)
-            self.eventLoopGroup = nil
-        }
+        listener?.stop()
+        listener = nil
     }
 
-    private func endpointURL(for channel: Channel) throws -> URL {
-        guard let address = channel.localAddress, let port = address.port else {
-            throw AdaMCPError.screenshotUnavailable("Failed to resolve bound HTTP port.")
-        }
+    private func endpointURL(port: Int) throws -> URL {
         let host = configuration.host == "0.0.0.0" ? "127.0.0.1" : configuration.host
         guard let url = URL(string: "http://\(host):\(port)\(configuration.endpoint)") else {
             throw AdaMCPError.screenshotUnavailable("Failed to construct HTTP endpoint URL.")
         }
         return url
-    }
-
-    fileprivate var endpoint: String {
-        configuration.endpoint
     }
 
     private static func isInitializeRequest(_ body: Data) -> Bool {
@@ -199,8 +181,11 @@ actor EmbeddedHTTPMCPServer {
     }
 
     private func sessionCleanupLoop() async {
-        while self.channel != nil {
+        while Task.isCancelled == false {
             try? await Task.sleep(for: .seconds(60))
+            if Task.isCancelled {
+                break
+            }
             let now = Date()
             let expired = sessions.filter { _, context in
                 now.timeIntervalSince(context.lastAccessedAt) > configuration.sessionTimeout
@@ -210,80 +195,234 @@ actor EmbeddedHTTPMCPServer {
             }
         }
     }
+}
 
-    private func shutdownEventLoopGroup(_ group: MultiThreadedEventLoopGroup) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            group.shutdownGracefully { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: ())
+private final class FoundationHTTPListener: @unchecked Sendable {
+    let port: Int
+
+    private let socket: SocketDescriptor
+    private let configuration: EmbeddedHTTPMCPServer.Configuration
+    private let app: EmbeddedHTTPMCPServer
+    private let logger: Logger
+    private let isRunning = LockedValue(true)
+    private var acceptTask: Task<Void, Never>?
+
+    init(
+        configuration: EmbeddedHTTPMCPServer.Configuration,
+        app: EmbeddedHTTPMCPServer,
+        logger: Logger
+    ) throws {
+        let socket = try SocketDescriptor.openListener(host: configuration.host, port: configuration.port)
+        self.socket = socket
+        self.port = try socket.boundPort()
+        self.configuration = configuration
+        self.app = app
+        self.logger = logger
+    }
+
+    func start() {
+        acceptTask = Task.detached { [socket, app, configuration, logger, isRunning] in
+            while isRunning.value {
+                do {
+                    let clientSocket = try socket.accept()
+                    Task.detached {
+                        await FoundationHTTPConnection(
+                            socket: clientSocket,
+                            app: app,
+                            endpoint: configuration.endpoint,
+                            logger: logger
+                        ).run()
+                    }
+                } catch {
+                    if isRunning.value {
+                        logger.error("AdaMCP HTTP accept failed: \(error.localizedDescription)")
+                    }
                 }
             }
         }
     }
+
+    func stop() {
+        isRunning.value = false
+        socket.close()
+        acceptTask?.cancel()
+        acceptTask = nil
+    }
 }
 
-private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
-    typealias InboundIn = HTTPServerRequestPart
-    typealias OutboundOut = HTTPServerResponsePart
+private struct FoundationHTTPConnection: Sendable {
+    let socket: SocketDescriptor
+    let app: EmbeddedHTTPMCPServer
+    let endpoint: String
+    let logger: Logger
 
-    private let app: EmbeddedHTTPMCPServer
+    func run() async {
+        defer { socket.close() }
 
-    private struct RequestState {
-        var head: HTTPRequestHead
-        var bodyBuffer: ByteBuffer
-    }
-
-    private var requestState: RequestState?
-
-    init(app: EmbeddedHTTPMCPServer) {
-        self.app = app
-    }
-
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let part = unwrapInboundIn(data)
-        switch part {
-        case .head(let head):
-            requestState = RequestState(
-                head: head,
-                bodyBuffer: context.channel.allocator.buffer(capacity: 0)
-            )
-        case .body(var buffer):
-            requestState?.bodyBuffer.writeBuffer(&buffer)
-        case .end:
-            guard let state = requestState else {
+        do {
+            let rawRequest = try socket.readHTTPRequest()
+            let requestPath = rawRequest.path.split(separator: "?").first.map(String.init) ?? rawRequest.path
+            guard requestPath == endpoint else {
+                try await socket.writeResponse(.error(statusCode: 404, .invalidRequest("Not Found")))
                 return
             }
-            requestState = nil
-            nonisolated(unsafe) let context = context
-            Task {
-                await self.handleRequest(state: state, context: context)
-            }
-        }
-    }
 
-    private func handleRequest(state: RequestState, context: ChannelHandlerContext) async {
-        let path = state.head.uri.split(separator: "?").first.map(String.init) ?? state.head.uri
-        let endpoint = await app.endpoint
-
-        guard path == endpoint else {
-            await writeResponse(
-                .error(statusCode: 404, .invalidRequest("Not Found")),
-                version: state.head.version,
-                context: context
+            let request = HTTPRequest(
+                method: rawRequest.method,
+                headers: rawRequest.headers,
+                body: rawRequest.body,
+                path: requestPath
             )
-            return
+            let response = await app.handleHTTPRequest(request)
+            try await socket.writeResponse(response)
+        } catch {
+            logger.debug("AdaMCP HTTP connection closed: \(error.localizedDescription)")
         }
+    }
+}
 
-        let request = self.makeHTTPRequest(from: state)
-        let response = await app.handleHTTPRequest(request)
-        await writeResponse(response, version: state.head.version, context: context)
+private struct RawHTTPRequest {
+    var method: String
+    var path: String
+    var headers: [String: String]
+    var body: Data?
+}
+
+private final class LockedValue<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: Value
+
+    init(_ value: Value) {
+        self.storage = value
     }
 
-    private func makeHTTPRequest(from state: RequestState) -> HTTPRequest {
+    var value: Value {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+        set {
+            lock.lock()
+            storage = newValue
+            lock.unlock()
+        }
+    }
+}
+
+private struct SocketDescriptor: Sendable {
+    #if canImport(WinSDK)
+    typealias Handle = SOCKET
+    #else
+    typealias Handle = Int32
+    #endif
+
+    let rawValue: Handle
+
+    static func openListener(host: String, port: Int) throws -> SocketDescriptor {
+        #if canImport(WinSDK)
+        try WindowsSocketRuntime.start()
+        let descriptor = WinSDK.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP.rawValue)
+        guard descriptor != INVALID_SOCKET else {
+            throw SocketError.operationFailed("socket")
+        }
+        #elseif canImport(Darwin) || canImport(Glibc)
+        let descriptor = socket(AF_INET, socketStreamType, 0)
+        guard descriptor >= 0 else {
+            throw SocketError.operationFailed("socket")
+        }
+        #else
+        throw SocketError.unsupportedPlatform
+        #endif
+
+        let socket = SocketDescriptor(rawValue: descriptor)
+        do {
+            try socket.configureReusable()
+            try socket.bind(host: host, port: port)
+            #if canImport(WinSDK)
+            guard WinSDK.listen(descriptor, 256) == 0 else {
+                throw SocketError.operationFailed("listen")
+            }
+            #else
+            guard listen(descriptor, 256) == 0 else {
+                throw SocketError.operationFailed("listen")
+            }
+            #endif
+            return socket
+        } catch {
+            socket.close()
+            throw error
+        }
+    }
+
+    func accept() throws -> SocketDescriptor {
+        #if canImport(WinSDK)
+        let descriptor = WinSDK.accept(rawValue, nil, nil)
+        guard descriptor != INVALID_SOCKET else {
+            throw SocketError.operationFailed("accept")
+        }
+        return SocketDescriptor(rawValue: descriptor)
+        #elseif canImport(Darwin) || canImport(Glibc)
+        let descriptor = DarwinBridge.accept(rawValue, nil, nil)
+        guard descriptor >= 0 else {
+            throw SocketError.operationFailed("accept")
+        }
+        let socket = SocketDescriptor(rawValue: descriptor)
+        try socket.disableSIGPIPE()
+        return socket
+        #else
+        throw SocketError.unsupportedPlatform
+        #endif
+    }
+
+    func close() {
+        #if canImport(WinSDK)
+        _ = WinSDK.closesocket(rawValue)
+        #elseif canImport(Darwin) || canImport(Glibc)
+        _ = DarwinBridge.close(rawValue)
+        #endif
+    }
+
+    func readHTTPRequest() throws -> RawHTTPRequest {
+        var data = Data()
+        var headerEnd: Range<Data.Index>?
+        let maxHeaderBytes = 64 * 1024
+        let maxBodyBytes = 16 * 1024 * 1024
+
+        while headerEnd == nil {
+            try readChunk(into: &data)
+            if data.count > maxHeaderBytes {
+                throw SocketError.invalidRequest("HTTP header is too large.")
+            }
+            headerEnd = data.range(of: Data([13, 10, 13, 10]))
+        }
+
+        guard let headerEnd else {
+            throw SocketError.invalidRequest("Missing HTTP header terminator.")
+        }
+
+        let headerData = data[..<headerEnd.lowerBound]
+        guard let headerText = String(data: headerData, encoding: .utf8) else {
+            throw SocketError.invalidRequest("HTTP headers are not UTF-8.")
+        }
+
+        let lines = headerText.components(separatedBy: "\r\n")
+        guard let requestLine = lines.first else {
+            throw SocketError.invalidRequest("Missing request line.")
+        }
+
+        let requestParts = requestLine.split(separator: " ", maxSplits: 2).map(String.init)
+        guard requestParts.count >= 2 else {
+            throw SocketError.invalidRequest("Malformed request line.")
+        }
+
         var headers: [String: String] = [:]
-        for (name, value) in state.head.headers {
+        for line in lines.dropFirst() where line.isEmpty == false {
+            guard let separator = line.firstIndex(of: ":") else {
+                continue
+            }
+            let name = String(line[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = String(line[line.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
             if let existing = headers[name] {
                 headers[name] = existing + ", " + value
             } else {
@@ -291,70 +430,334 @@ private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
             }
         }
 
+        let contentLength = headers.first { $0.key.lowercased() == "content-length" }
+            .flatMap { Int($0.value.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+        guard contentLength <= maxBodyBytes else {
+            throw SocketError.invalidRequest("HTTP body is too large.")
+        }
+
+        let bodyStart = headerEnd.upperBound
+        let currentBodyBytes = data.count - bodyStart
+        if currentBodyBytes < contentLength {
+            while data.count - bodyStart < contentLength {
+                try readChunk(into: &data)
+            }
+        }
+
         let body: Data?
-        if state.bodyBuffer.readableBytes > 0,
-           let bytes = state.bodyBuffer.getBytes(at: 0, length: state.bodyBuffer.readableBytes) {
-            body = Data(bytes)
+        if contentLength > 0 {
+            body = data.subdata(in: bodyStart..<(bodyStart + contentLength))
         } else {
             body = nil
         }
 
-        let path = state.head.uri.split(separator: "?").first.map(String.init) ?? state.head.uri
-        return HTTPRequest(method: state.head.method.rawValue, headers: headers, body: body, path: path)
+        return RawHTTPRequest(
+            method: requestParts[0],
+            path: requestParts[1],
+            headers: headers,
+            body: body
+        )
     }
 
-    private func writeResponse(
-        _ response: HTTPResponse,
-        version: HTTPVersion,
-        context: ChannelHandlerContext
-    ) async {
-        nonisolated(unsafe) let context = context
-        let eventLoop = context.eventLoop
-
+    func writeResponse(_ response: HTTPResponse) async throws {
         switch response {
         case .stream(let stream, _):
-            eventLoop.execute {
-                var head = HTTPResponseHead(version: version, status: .init(statusCode: response.statusCode))
-                for (name, value) in response.headers {
-                    head.headers.add(name: name, value: value)
-                }
-                context.write(self.wrapOutboundOut(.head(head)), promise: nil)
-                context.flush()
+            var headers = response.headers
+            headers["Connection"] = "close"
+            try writeHTTPHead(statusCode: response.statusCode, headers: headers)
+            for try await chunk in stream {
+                try writeAll(chunk)
             }
-
-            do {
-                for try await chunk in stream {
-                    eventLoop.execute {
-                        var buffer = context.channel.allocator.buffer(capacity: chunk.count)
-                        buffer.writeBytes(chunk)
-                        context.writeAndFlush(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
-                    }
-                }
-            } catch {
-                return
-            }
-
-            eventLoop.execute {
-                context.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
-            }
-
         default:
             let body = response.bodyData
-            eventLoop.execute {
-                var head = HTTPResponseHead(version: version, status: .init(statusCode: response.statusCode))
-                for (name, value) in response.headers {
-                    head.headers.add(name: name, value: value)
-                }
-                context.write(self.wrapOutboundOut(.head(head)), promise: nil)
-
-                if let body {
-                    var buffer = context.channel.allocator.buffer(capacity: body.count)
-                    buffer.writeBytes(body)
-                    context.write(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
-                }
-
-                context.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
+            var headers = response.headers
+            headers["Connection"] = "close"
+            if let body {
+                headers["Content-Length"] = "\(body.count)"
+            } else {
+                headers["Content-Length"] = "0"
+            }
+            try writeHTTPHead(statusCode: response.statusCode, headers: headers)
+            if let body {
+                try writeAll(body)
             }
         }
     }
+
+    private static var socketStreamType: Int32 {
+        #if canImport(Darwin)
+        SOCK_STREAM
+        #elseif canImport(Glibc)
+        Int32(SOCK_STREAM.rawValue)
+        #else
+        0
+        #endif
+    }
+
+    private func configureReusable() throws {
+        var value: Int32 = 1
+        #if canImport(WinSDK)
+        guard WinSDK.setsockopt(rawValue, SOL_SOCKET, SO_REUSEADDR, &value, Int32(MemoryLayout<Int32>.size)) == 0 else {
+            throw SocketError.operationFailed("setsockopt(SO_REUSEADDR)")
+        }
+        #else
+        guard setsockopt(rawValue, SOL_SOCKET, SO_REUSEADDR, &value, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+            throw SocketError.operationFailed("setsockopt(SO_REUSEADDR)")
+        }
+        #endif
+        try disableSIGPIPE()
+    }
+
+    private func disableSIGPIPE() throws {
+        #if canImport(Darwin)
+        var value: Int32 = 1
+        guard setsockopt(rawValue, SOL_SOCKET, SO_NOSIGPIPE, &value, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+            throw SocketError.operationFailed("setsockopt(SO_NOSIGPIPE)")
+        }
+        #endif
+    }
+
+    private func bind(host: String, port: Int) throws {
+        #if canImport(WinSDK)
+        var address = sockaddr_in()
+        address.sin_family = ADDRESS_FAMILY(AF_INET)
+        address.sin_port = UInt16(port).bigEndian
+
+        if host == "0.0.0.0" {
+            address.sin_addr.S_un.S_addr = INADDR_ANY
+        } else if host == "localhost" {
+            guard inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) == 1 else {
+                throw SocketError.operationFailed("inet_pton")
+            }
+        } else {
+            guard inet_pton(AF_INET, host, &address.sin_addr) == 1 else {
+                throw SocketError.invalidRequest("Only IPv4 bind hosts are supported by AdaMCP HTTP server.")
+            }
+        }
+
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                WinSDK.bind(rawValue, sockaddrPointer, Int32(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        #else
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = UInt16(port).bigEndian
+
+        if host == "0.0.0.0" {
+            address.sin_addr = in_addr(s_addr: INADDR_ANY.bigEndian)
+        } else if host == "localhost" {
+            guard inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) == 1 else {
+                throw SocketError.operationFailed("inet_pton")
+            }
+        } else {
+            guard inet_pton(AF_INET, host, &address.sin_addr) == 1 else {
+                throw SocketError.invalidRequest("Only IPv4 bind hosts are supported by AdaMCP HTTP server.")
+            }
+        }
+
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                DarwinBridge.bind(rawValue, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        #endif
+        guard result == 0 else {
+            throw SocketError.operationFailed("bind")
+        }
+    }
+
+    func boundPort() throws -> Int {
+        #if canImport(WinSDK)
+        var address = sockaddr_in()
+        var length = Int32(MemoryLayout<sockaddr_in>.size)
+        let result = withUnsafeMutablePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                WinSDK.getsockname(rawValue, sockaddrPointer, &length)
+            }
+        }
+        guard result == 0 else {
+            throw SocketError.operationFailed("getsockname")
+        }
+        return Int(UInt16(bigEndian: address.sin_port))
+        #else
+        var address = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let result = withUnsafeMutablePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                DarwinBridge.getsockname(rawValue, sockaddrPointer, &length)
+            }
+        }
+        guard result == 0 else {
+            throw SocketError.operationFailed("getsockname")
+        }
+        return Int(UInt16(bigEndian: address.sin_port))
+        #endif
+    }
+
+    private func readChunk(into data: inout Data) throws {
+        var buffer = [UInt8](repeating: 0, count: 8192)
+        #if canImport(WinSDK)
+        let readCount = buffer.withUnsafeMutableBytes { bytes in
+            WinSDK.recv(rawValue, bytes.baseAddress, Int32(bytes.count), 0)
+        }
+        #else
+        let readCount = buffer.withUnsafeMutableBytes { bytes in
+            DarwinBridge.recv(rawValue, bytes.baseAddress, bytes.count, 0)
+        }
+        #endif
+        guard readCount > 0 else {
+            throw SocketError.connectionClosed
+        }
+        data.append(buffer, count: Int(readCount))
+    }
+
+    private func writeHTTPHead(statusCode: Int, headers: [String: String]) throws {
+        var text = "HTTP/1.1 \(statusCode) \(Self.reasonPhrase(for: statusCode))\r\n"
+        for (name, value) in headers {
+            text += "\(name): \(value)\r\n"
+        }
+        text += "\r\n"
+        try writeAll(Data(text.utf8))
+    }
+
+    private func writeAll(_ data: Data) throws {
+        try data.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else {
+                return
+            }
+
+            var sent = 0
+            while sent < bytes.count {
+                #if canImport(WinSDK)
+                let count = WinSDK.send(rawValue, baseAddress.advanced(by: sent), Int32(bytes.count - sent), 0)
+                #else
+                let count = DarwinBridge.send(rawValue, baseAddress.advanced(by: sent), bytes.count - sent)
+                #endif
+                guard count > 0 else {
+                    throw SocketError.connectionClosed
+                }
+                sent += Int(count)
+            }
+        }
+    }
+
+    private static func reasonPhrase(for statusCode: Int) -> String {
+        switch statusCode {
+        case 200: "OK"
+        case 202: "Accepted"
+        case 400: "Bad Request"
+        case 404: "Not Found"
+        case 405: "Method Not Allowed"
+        case 409: "Conflict"
+        case 500: "Internal Server Error"
+        default: "HTTP Response"
+        }
+    }
 }
+
+private enum SocketError: LocalizedError {
+    case connectionClosed
+    case invalidRequest(String)
+    case operationFailed(String)
+    case unsupportedPlatform
+
+    var errorDescription: String? {
+        switch self {
+        case .connectionClosed:
+            "Connection closed."
+        case .invalidRequest(let message):
+            message
+        case .operationFailed(let operation):
+            "\(operation) failed with errno \(errno)."
+        case .unsupportedPlatform:
+            "Embedded AdaMCP HTTP server is not supported on this platform."
+        }
+    }
+}
+
+#if canImport(WinSDK)
+private enum WindowsSocketRuntime {
+    private static let lock = NSLock()
+    private nonisolated(unsafe) static var didStart = false
+
+    static func start() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard didStart == false else {
+            return
+        }
+
+        var data = WSADATA()
+        guard WSAStartup(0x0202, &data) == 0 else {
+            throw SocketError.operationFailed("WSAStartup")
+        }
+        didStart = true
+    }
+}
+#endif
+
+#if canImport(Darwin) || canImport(Glibc)
+private enum DarwinBridge {
+    static func accept(_ socket: Int32, _ address: UnsafeMutablePointer<sockaddr>?, _ length: UnsafeMutablePointer<socklen_t>?) -> Int32 {
+        #if canImport(Darwin)
+        Darwin.accept(socket, address, length)
+        #elseif canImport(Glibc)
+        Glibc.accept(socket, address, length)
+        #else
+        -1
+        #endif
+    }
+
+    static func bind(_ socket: Int32, _ address: UnsafePointer<sockaddr>, _ length: socklen_t) -> Int32 {
+        #if canImport(Darwin)
+        Darwin.bind(socket, address, length)
+        #elseif canImport(Glibc)
+        Glibc.bind(socket, address, length)
+        #else
+        -1
+        #endif
+    }
+
+    static func close(_ socket: Int32) -> Int32 {
+        #if canImport(Darwin)
+        Darwin.close(socket)
+        #elseif canImport(Glibc)
+        Glibc.close(socket)
+        #else
+        -1
+        #endif
+    }
+
+    static func getsockname(_ socket: Int32, _ address: UnsafeMutablePointer<sockaddr>, _ length: UnsafeMutablePointer<socklen_t>) -> Int32 {
+        #if canImport(Darwin)
+        Darwin.getsockname(socket, address, length)
+        #elseif canImport(Glibc)
+        Glibc.getsockname(socket, address, length)
+        #else
+        -1
+        #endif
+    }
+
+    static func recv(_ socket: Int32, _ buffer: UnsafeMutableRawPointer?, _ length: Int, _ flags: Int32) -> Int {
+        #if canImport(Darwin)
+        Darwin.recv(socket, buffer, length, flags)
+        #elseif canImport(Glibc)
+        Glibc.recv(socket, buffer, length, flags)
+        #else
+        -1
+        #endif
+    }
+
+    static func send(_ socket: Int32, _ buffer: UnsafeRawPointer, _ length: Int) -> Int {
+        #if canImport(Darwin)
+        Darwin.send(socket, buffer, length, 0)
+        #elseif canImport(Glibc)
+        Glibc.send(socket, buffer, length, Int32(MSG_NOSIGNAL))
+        #else
+        -1
+        #endif
+    }
+}
+#endif

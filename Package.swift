@@ -10,6 +10,7 @@ let package = Package(
         .visionOS(.v2)
     ],
     products: [
+        .library(name: "MCP", targets: ["MCP"]),
         .library(name: "AdaMCPCore", targets: ["AdaMCPCore"]),
         .library(name: "AdaMCPServer", targets: ["AdaMCPServer"]),
         .library(name: "AdaMCPPlugin", targets: ["AdaMCPPlugin"])
@@ -18,18 +19,23 @@ let package = Package(
         .package(url: "https://github.com/AdaEngine/AdaEngine", branch: "main"),
         .package(url: "https://github.com/apple/swift-distributed-tracing", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.0.0"),
-        .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),
-        .package(url: "https://github.com/apple/swift-nio.git", from: "2.74.0"),
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.11.0")
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0")
     ],
     targets: [
+        .target(
+            name: "MCP",
+            dependencies: [
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "SystemPackage", package: "swift-system")
+            ]
+        ),
         .target(
             name: "AdaMCPCore",
             dependencies: [
                 .product(name: "AdaEngine", package: "AdaEngine"),
                 .product(name: "InMemoryTracing", package: "swift-distributed-tracing"),
                 .product(name: "Tracing", package: "swift-distributed-tracing"),
-                .product(name: "MCP", package: "swift-sdk"),
+                "MCP",
                 .product(name: "Logging", package: "swift-log")
             ]
         ),
@@ -37,11 +43,8 @@ let package = Package(
             name: "AdaMCPServer",
             dependencies: [
                 "AdaMCPCore",
-                .product(name: "MCP", package: "swift-sdk"),
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
-                .product(name: "NIOHTTP1", package: "swift-nio")
+                "MCP",
+                .product(name: "Logging", package: "swift-log")
             ]
         ),
         .target(
@@ -62,7 +65,7 @@ let package = Package(
                 .product(name: "AdaEngine", package: "AdaEngine"),
                 .product(name: "InMemoryTracing", package: "swift-distributed-tracing"),
                 .product(name: "Tracing", package: "swift-distributed-tracing"),
-                .product(name: "MCP", package: "swift-sdk"),
+                "MCP",
                 .product(name: "SystemPackage", package: "swift-system")
             ],
             path: "Tests/AdaMCPTests"

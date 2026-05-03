@@ -610,7 +610,11 @@ public final class AdaMCPRuntime {
                     ?? .init(content: [.text(text: mcpError.localizedDescription, annotations: nil, _meta: nil)], isError: true)
             }
 
-            return .init(content: [.text(text: error.localizedDescription, annotations: nil, _meta: nil)], isError: true)
+            return (try? self.jsonToolResult([
+                "code": "internal_error",
+                "message": .string(error.localizedDescription)
+            ], isError: true))
+                ?? .init(content: [.text(text: error.localizedDescription, annotations: nil, _meta: nil)], isError: true)
         }
     }
 
