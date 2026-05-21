@@ -28,6 +28,34 @@ extension AdaMCPRuntime {
         ])
     }
 
+    func traceStatusPayload() throws -> Value {
+        guard let traceRecorder else {
+            throw AdaMCPError.tracingUnavailable
+        }
+        return traceRecorder.statusPayload()
+    }
+
+    func traceStartFilePayload() throws -> Value {
+        guard let traceRecorder else {
+            throw AdaMCPError.tracingUnavailable
+        }
+        return try traceRecorder.startFilePayload()
+    }
+
+    func traceStopFilePayload(arguments: [String: Value]) throws -> Value {
+        guard let traceRecorder else {
+            throw AdaMCPError.tracingUnavailable
+        }
+        return try traceRecorder.stopFilePayload(arguments: arguments)
+    }
+
+    func traceDiscardFilePayload() throws -> Value {
+        guard let traceRecorder else {
+            throw AdaMCPError.tracingUnavailable
+        }
+        return try traceRecorder.discardFilePayload()
+    }
+
     func traceResourcePayload(url: URL, uri: String) throws -> Value {
         let parts = url.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
         guard let format = parts.first else {

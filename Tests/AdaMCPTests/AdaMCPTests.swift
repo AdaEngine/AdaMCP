@@ -7,11 +7,7 @@ import MCP
 import Testing
 import Tracing
 
-#if canImport(System)
-import System
-#else
 @preconcurrency import SystemPackage
-#endif
 
 @MainActor
 @Suite("AdaMCP Tests")
@@ -208,13 +204,20 @@ struct AdaMCPTests {
         let (tools, _) = try await client.listTools()
         #expect(tools.contains { $0.name == "entity.get_by_name" })
         #expect(tools.contains { $0.name == "render.capture_screenshot" })
+        #expect(tools.contains { $0.name == "render_graph.get" })
+        #expect(tools.contains { $0.name == "render_graph.collect_frames" })
+        #expect(tools.contains { $0.name == "render_graph.dump_attachment" })
 
         let (resources, _) = try await client.listResources()
         #expect(resources.contains { $0.uri == "ada://worlds" })
         #expect(resources.contains { $0.uri == "ada://world/Main" })
+        #expect(resources.contains { $0.uri == "ada://render/graphs" })
+        #expect(resources.contains { $0.uri == "ada://render/frames/recent" })
+        #expect(resources.contains { $0.uri == "ada://render/cameras" })
 
         let (templates, _) = try await client.listResourceTemplates()
         #expect(templates.contains { $0.uriTemplate == "ada://entity/{world}/{id}" })
+        #expect(templates.contains { $0.uriTemplate == "ada://render/graph/{label}" })
 
         let worldContents = try await client.readResource(uri: "ada://worlds")
         let worldsPayload = try self.decodeResourcePayload(worldContents)
@@ -235,6 +238,89 @@ struct AdaMCPTests {
         await server.stop()
         await clientTransport.disconnect()
         await serverTransport.disconnect()
+    }
+
+    @Test("Runtime exposes render graph diagnostics")
+    func runtimeExposesRenderGraphDiagnostics() async throws {
+        let fixture = try await self.makeRenderGraphFixture()
+
+        let getResult = await fixture.runtime.callTool(
+            name: "render_graph.get",
+            arguments: ["includeSubgraphs": .bool(true)]
+        )
+        let getPayload = try self.decodeToolPayload(getResult)
+        #expect(getPayload.objectValue?["backend"]?.objectValue?["type"]?.stringValue == "unknown")
+        #expect(getPayload.objectValue?["graph"]?.objectValue?["label"]?.stringValue == "Root Graph")
+
+        let cameras = getPayload.objectValue?["cameras"]?.arrayValue ?? []
+        #expect(cameras.count == 1)
+        #expect(cameras.first?.objectValue?["name"]?.stringValue == "Primary Camera")
+        let attachments = cameras.first?.objectValue?["attachments"]?.arrayValue ?? []
+        #expect(
+            attachments.contains {
+                $0.objectValue?["name"]?.stringValue == "depth"
+                    && $0.objectValue?["isAvailable"]?.boolValue == false
+                    && $0.objectValue?["unsupportedReason"]?.stringValue != nil
+            }
+        )
+
+        let graphsPayload = try self.decodeResourcePayload(
+            try await fixture.runtime.readResource(uri: "ada://render/graphs").contents
+        )
+        #expect(graphsPayload.objectValue?["graph"]?.objectValue?["label"]?.stringValue == "Root Graph")
+
+        let subgraphPayload = try self.decodeResourcePayload(
+            try await fixture.runtime.readResource(uri: "ada://render/graph/Sub%20Graph%20A").contents
+        )
+        #expect(subgraphPayload.objectValue?["label"]?.stringValue == "Sub Graph A")
+
+        let camerasPayload = try self.decodeResourcePayload(
+            try await fixture.runtime.readResource(uri: "ada://render/cameras").contents
+        )
+        #expect(camerasPayload.arrayValue?.first?.objectValue?["entityId"]?.intValue == fixture.camera.id)
+
+        let collectResult = await fixture.runtime.callTool(
+            name: "render_graph.collect_frames",
+            arguments: [
+                "frames": .int(2),
+                "pauseBeforeCapture": .bool(true),
+                "clearBeforeCollect": .bool(true)
+            ]
+        )
+        let collectPayload = try self.decodeToolPayload(collectResult)
+        #expect(collectPayload.objectValue?["requestedFrames"]?.intValue == 2)
+        let records = collectPayload.objectValue?["records"]?.arrayValue ?? []
+        #expect(records.count == 4)
+        #expect(records.contains { $0.objectValue?["graphLabel"]?.stringValue == "Root Graph" })
+        #expect(records.contains { $0.objectValue?["graphLabel"]?.stringValue == "Sub Graph A" })
+        #expect(fixture.diagnostics.isEnabled == false)
+        #expect(fixture.diagnostics.capacity == 2)
+
+        let control = fixture.appWorlds.main.getOrInitRefResource(SimulationControl.self) {
+            SimulationControl()
+        }
+        #expect(control.wrappedValue.mode == .paused)
+        #expect(control.wrappedValue.reason == "before collect")
+        #expect(control.wrappedValue.pendingStepCount == 5)
+
+        let recentFramesPayload = try self.decodeResourcePayload(
+            try await fixture.runtime.readResource(uri: "ada://render/frames/recent").contents
+        )
+        #expect(recentFramesPayload.arrayValue?.count == 2)
+
+        let depthDumpResult = await fixture.runtime.callTool(
+            name: "render_graph.dump_attachment",
+            arguments: [
+                "cameraName": .string("Primary Camera"),
+                "attachment": .string("depth"),
+                "pauseBeforeCapture": .bool(false),
+                "refreshFrame": .bool(false)
+            ]
+        )
+        let depthDumpPayload = try self.decodeToolPayload(depthDumpResult)
+        #expect(depthDumpPayload.objectValue?["isDumped"]?.boolValue == false)
+        #expect(depthDumpPayload.objectValue?["attachment"]?.objectValue?["name"]?.stringValue == "depth")
+        #expect(depthDumpPayload.objectValue?["unsupportedReason"]?.stringValue != nil)
     }
 
     @Test("Server supports stdio transport roundtrip")
@@ -292,7 +378,7 @@ struct AdaMCPTests {
     @Test("Runtime exports captured tracing spans as OTLP JSON")
     func runtimeExportsTracingSpansAsOTLPJSON() async throws {
         let recorder = AdaMCPTraceRecorder(
-            tracer: InMemoryTracer(idGenerator: .incrementing),
+            tracer: AdaMCPTracer(idGenerator: .incrementing),
             serviceName: "adamcp-tests",
             scopeName: "AdaMCPTests"
         )
@@ -331,6 +417,102 @@ struct AdaMCPTests {
 
         let events = otlpSpan["events"]?.arrayValue ?? []
         #expect(events.first?.objectValue?["name"]?.stringValue == "scheduler.started")
+    }
+
+    @Test("Runtime keeps only the newest bounded tracing spans")
+    func runtimeKeepsOnlyNewestBoundedTracingSpans() async throws {
+        let recorder = AdaMCPTraceRecorder(
+            tracer: AdaMCPTracer(idGenerator: .incrementing, maxFinishedSpanCount: 2),
+            serviceName: "adamcp-tests",
+            scopeName: "AdaMCPTests"
+        )
+        for name in ["first", "second", "third"] {
+            let span = recorder.tracer.startSpan(name)
+            span.end()
+        }
+
+        let fixture = self.makeFixture(traceRecorder: recorder)
+        let spansResult = await fixture.runtime.callTool(name: "trace.list_spans", arguments: [:])
+        let spansPayload = try self.decodeToolPayload(spansResult)
+        let spans = spansPayload.objectValue?["spans"]?.arrayValue ?? []
+        #expect(spans.map { $0.objectValue?["name"]?.stringValue } == ["second", "third"])
+
+        let summary = spansPayload.objectValue?["summary"]?.objectValue
+        #expect(summary?["finishedSpanCount"]?.intValue == 2)
+        #expect(summary?["droppedSpanCount"]?.intValue == 1)
+        #expect(summary?["maxFinishedSpanCount"]?.intValue == 2)
+
+        let clearResult = await fixture.runtime.callTool(name: "trace.clear", arguments: [:])
+        _ = try self.decodeToolPayload(clearResult)
+
+        let statusResult = await fixture.runtime.callTool(name: "trace.status", arguments: [:])
+        let statusPayload = try self.decodeToolPayload(statusResult)
+        let memory = statusPayload.objectValue?["memory"]?.objectValue
+        #expect(memory?["finishedSpanCount"]?.intValue == 0)
+        #expect(memory?["droppedSpanCount"]?.intValue == 0)
+    }
+
+    @Test("Runtime records file tracing sessions on demand and deletes exported files")
+    func runtimeRecordsFileTracingSessionsOnDemandAndDeletesExportedFiles() async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AdaMCPTraceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let recorder = AdaMCPTraceRecorder(
+            tracer: AdaMCPTracer(
+                idGenerator: .incrementing,
+                maxFinishedSpanCount: 10,
+                temporaryDirectory: temporaryDirectory
+            ),
+            serviceName: "adamcp-tests",
+            scopeName: "AdaMCPTests"
+        )
+        let fixture = self.makeFixture(traceRecorder: recorder)
+
+        let beforeStartSpan = recorder.tracer.startSpan("before-start")
+        beforeStartSpan.end()
+
+        let initialStatusResult = await fixture.runtime.callTool(name: "trace.status", arguments: [:])
+        let initialStatusPayload = try self.decodeToolPayload(initialStatusResult)
+        #expect(initialStatusPayload.objectValue?["fileSession"]?.objectValue?["active"]?.boolValue == false)
+        #expect(initialStatusPayload.objectValue?["fileSession"]?.objectValue?["path"] == .null)
+        #expect(FileManager.default.fileExists(atPath: temporaryDirectory.path) == false)
+
+        let startResult = await fixture.runtime.callTool(name: "trace.start_file", arguments: [:])
+        let startPayload = try self.decodeToolPayload(startResult)
+        let filePath = try #require(startPayload.objectValue?["fileSession"]?.objectValue?["path"]?.stringValue)
+        #expect(FileManager.default.fileExists(atPath: filePath))
+
+        let doubleStartResult = await fixture.runtime.callTool(name: "trace.start_file", arguments: [:])
+        #expect(doubleStartResult.isError == true)
+        let doubleStartPayload = try self.decodeToolPayload(doubleStartResult)
+        #expect(doubleStartPayload.objectValue?["code"]?.stringValue == "trace_file_session_already_active")
+
+        let afterStartSpan = recorder.tracer.startSpan("after-start")
+        afterStartSpan.attributes["phase"] = "file"
+        afterStartSpan.end()
+
+        let stopResult = await fixture.runtime.callTool(name: "trace.stop_file", arguments: [:])
+        let stopPayload = try self.decodeToolPayload(stopResult)
+        let fileSpans = stopPayload.objectValue?["spans"]?.arrayValue ?? []
+        #expect(fileSpans.count == 1)
+        #expect(fileSpans.first?.objectValue?["name"]?.stringValue == "after-start")
+        #expect(fileSpans.first?.objectValue?["attributes"]?.objectValue?["phase"]?.stringValue == "file")
+        #expect(FileManager.default.fileExists(atPath: filePath) == false)
+
+        let stopAgainResult = await fixture.runtime.callTool(name: "trace.stop_file", arguments: [:])
+        #expect(stopAgainResult.isError == true)
+        let stopAgainPayload = try self.decodeToolPayload(stopAgainResult)
+        #expect(stopAgainPayload.objectValue?["code"]?.stringValue == "trace_file_session_inactive")
+
+        let restartResult = await fixture.runtime.callTool(name: "trace.start_file", arguments: [:])
+        let restartPayload = try self.decodeToolPayload(restartResult)
+        let discardPath = try #require(restartPayload.objectValue?["fileSession"]?.objectValue?["path"]?.stringValue)
+        #expect(FileManager.default.fileExists(atPath: discardPath))
+
+        let discardResult = await fixture.runtime.callTool(name: "trace.discard_file", arguments: [:])
+        _ = try self.decodeToolPayload(discardResult)
+        #expect(FileManager.default.fileExists(atPath: discardPath) == false)
     }
 
     @Test("Runtime exposes AdaUI inspection and safe actions")
@@ -640,6 +822,58 @@ struct AdaMCPTests {
         return (runtime, window, recorder)
     }
 
+    private func makeRenderGraphFixture() async throws -> (
+        runtime: AdaMCPRuntime,
+        appWorlds: AppWorlds,
+        diagnostics: RenderGraphDiagnostics,
+        camera: Entity
+    ) {
+        Camera.registerComponent()
+        CameraRenderGraph.registerComponent()
+        RenderViewTarget.registerComponent()
+
+        let mainWorld = World(name: "MainWorld")
+        mainWorld.insertResource(SimulationControl(
+            mode: .paused,
+            reason: "before collect",
+            pendingStepCount: 5
+        ))
+
+        let renderWorld = World(name: "RenderWorld")
+        var rootGraph = RenderGraph(label: "Root Graph")
+        var subgraph = RenderGraph(label: "Sub Graph A")
+        subgraph.addNode(AdaMCPTestNoopRenderNode(), by: "Sub Noop")
+        rootGraph.addNode(RunGraphNode(graphName: "Sub Graph A"), by: "Run Sub")
+        rootGraph.addSubgraph(subgraph, name: "Sub Graph A")
+
+        let diagnostics = RenderGraphDiagnostics(isEnabled: false, capacity: 2)
+        renderWorld.insertResource(rootGraph)
+        renderWorld.insertResource(diagnostics)
+        renderWorld.addSystem(AdaMCPTestRenderGraphSystem.self, on: .update)
+
+        let camera = renderWorld.spawn("Primary Camera") {
+            Camera()
+            CameraRenderGraph(subgraphLabel: "Sub Graph A", inputSlot: "view")
+            RenderViewTarget()
+        }
+
+        let appWorlds = AppWorlds(main: mainWorld)
+        appWorlds.updateScheduler = .update
+
+        let renderApp = AppWorlds(main: renderWorld)
+        renderApp.updateScheduler = .update
+        appWorlds.addSubworld(renderApp, by: .renderWorld)
+        try await appWorlds.build()
+
+        let runtime = AdaMCPRuntime(
+            appWorlds: appWorlds,
+            registry: MCPIntrospectionRegistry(),
+            renderCaptureService: RenderCaptureService(appWorlds: appWorlds)
+        )
+
+        return (runtime, appWorlds, diagnostics, camera)
+    }
+
     private func decodeToolPayload(_ result: CallTool.Result) throws -> Value {
         try self.decodeToolPayload(result.content)
     }
@@ -668,4 +902,173 @@ struct AdaMCPTests {
         }
         return nil
     }
+}
+
+private struct AdaMCPTestRenderGraphSystem: System {
+    init(world: World) { }
+
+    func update(context: UpdateContext) async {
+        guard let graph = context.world.getResource(RenderGraph.self) else {
+            return
+        }
+
+        do {
+            try await RenderGraphExecutor().execute(
+                graph,
+                renderDevice: AdaMCPTestRenderDevice(),
+                in: context.world,
+                diagnostics: context.world.getResource(RenderGraphDiagnostics.self)
+            )
+        } catch {
+            Issue.record("Render graph test system failed: \(error.localizedDescription)")
+        }
+    }
+}
+
+private struct AdaMCPTestNoopRenderNode: RenderNode {
+    func execute(context: inout Context, renderContext: RenderContext) async throws -> [RenderSlotValue] {
+        []
+    }
+}
+
+private final class AdaMCPTestRenderDevice: RenderDevice, @unchecked Sendable {
+    func createBuffer(label: String?, length: Int, options: ResourceOptions) -> Buffer {
+        AdaMCPTestBuffer(label: label, length: length)
+    }
+
+    func createBuffer(label: String?, bytes: UnsafeRawPointer, length: Int, options: ResourceOptions) -> Buffer {
+        AdaMCPTestBuffer(label: label, length: length)
+    }
+
+    func createIndexBuffer(label: String?, format: IndexBufferFormat, bytes: UnsafeRawPointer, length: Int) -> IndexBuffer {
+        AdaMCPTestIndexBuffer(label: label, length: length, indexFormat: format)
+    }
+
+    func createVertexBuffer(label: String?, length: Int, binding: Int) -> VertexBuffer {
+        AdaMCPTestVertexBuffer(label: label, length: length, binding: binding)
+    }
+
+    func compileShader(from shader: Shader) throws -> any CompiledShader {
+        fatalError("Not used by AdaMCP render graph tests.")
+    }
+
+    func createRenderPipeline(from descriptor: RenderPipelineDescriptor) -> RenderPipeline {
+        fatalError("Not used by AdaMCP render graph tests.")
+    }
+
+    func createSampler(from descriptor: SamplerDescriptor) -> Sampler {
+        AdaMCPTestSampler(descriptor: descriptor)
+    }
+
+    func createUniformBuffer(length: Int, binding: Int) -> UniformBuffer {
+        AdaMCPTestUniformBuffer(label: nil, length: length, binding: binding)
+    }
+
+    func createTexture(from descriptor: TextureDescriptor) -> GPUTexture {
+        AdaMCPTestGPUTexture(
+            size: SizeInt(width: descriptor.width, height: descriptor.height),
+            label: descriptor.debugLabel
+        )
+    }
+
+    func getImage(from texture: Texture) -> Image? {
+        nil
+    }
+
+    func createCommandQueue() -> CommandQueue {
+        AdaMCPTestCommandQueue()
+    }
+
+    @MainActor
+    func createSwapchain(from window: WindowID) -> (any Swapchain)? {
+        nil
+    }
+}
+
+private class AdaMCPTestBuffer: Buffer, @unchecked Sendable {
+    var label: String?
+    let length: Int
+    private let pointer: UnsafeMutableRawPointer
+
+    init(label: String?, length: Int) {
+        self.label = label
+        self.length = length
+        self.pointer = UnsafeMutableRawPointer.allocate(byteCount: max(length, 1), alignment: 1)
+    }
+
+    deinit {
+        pointer.deallocate()
+    }
+
+    func setData(_ bytes: UnsafeMutableRawPointer, byteCount: Int, offset: Int) {}
+    func contents() -> UnsafeMutableRawPointer { pointer }
+    func unmap() {}
+}
+
+private final class AdaMCPTestIndexBuffer: AdaMCPTestBuffer, IndexBuffer, @unchecked Sendable {
+    let indexFormat: IndexBufferFormat
+
+    init(label: String?, length: Int, indexFormat: IndexBufferFormat) {
+        self.indexFormat = indexFormat
+        super.init(label: label, length: length)
+    }
+}
+
+private final class AdaMCPTestVertexBuffer: AdaMCPTestBuffer, VertexBuffer, @unchecked Sendable {
+    let binding: Int
+
+    init(label: String?, length: Int, binding: Int) {
+        self.binding = binding
+        super.init(label: label, length: length)
+    }
+}
+
+private final class AdaMCPTestUniformBuffer: AdaMCPTestBuffer, UniformBuffer, @unchecked Sendable {
+    let binding: Int
+
+    init(label: String?, length: Int, binding: Int) {
+        self.binding = binding
+        super.init(label: label, length: length)
+    }
+}
+
+private final class AdaMCPTestSampler: Sampler {
+    let descriptor: SamplerDescriptor
+
+    init(descriptor: SamplerDescriptor) {
+        self.descriptor = descriptor
+    }
+}
+
+private final class AdaMCPTestGPUTexture: GPUTexture {
+    let size: SizeInt
+    var label: String?
+
+    init(size: SizeInt, label: String?) {
+        self.size = size
+        self.label = label
+    }
+
+    func replaceRegion(_ region: RectInt, mipmapLevel: Int, withBytes bytes: UnsafeRawPointer, bytesPerRow: Int) {}
+}
+
+private final class AdaMCPTestCommandQueue: CommandQueue {
+    func makeCommandBuffer() -> CommandBuffer {
+        AdaMCPTestCommandBuffer()
+    }
+}
+
+private final class AdaMCPTestCommandBuffer: CommandBuffer {
+    var label: String?
+
+    func beginRenderPass(_ desc: RenderPassDescriptor) -> RenderCommandEncoder {
+        fatalError("Not used by AdaMCP render graph tests.")
+    }
+
+    func beginBlitPass(_ desc: BlitPassDescriptor) -> BlitCommandEncoder {
+        fatalError("Not used by AdaMCP render graph tests.")
+    }
+
+    func commit() {}
+    func addCompletedHandler(_ handler: @escaping @Sendable () -> Void) {}
 }

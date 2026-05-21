@@ -60,6 +60,32 @@ struct ExampleApp: App {
 }
 ```
 
+## Connect from an agent with npx
+
+Install the MCP server in your agent configuration with the npm package:
+
+```json
+{
+  "mcpServers": {
+    "adamcp": {
+      "command": "npx",
+      "args": ["-y", "adamcp@latest"]
+    }
+  }
+}
+```
+
+The `adamcp` CLI speaks MCP over stdio to the agent. It discovers live AdaEngine apps through AdaMCP discovery manifests and connects to the selected app over HTTP. If no app is running, the router starts successfully and tells the agent to build and launch the AdaEngine app before continuing.
+
+Useful overrides:
+
+- `ADAMCP_URL` or `--url` connects directly to an HTTP MCP endpoint.
+- `ADAMCP_SERVER` or `--server` selects a discovery manifest by exact `id` or unique `serverName`.
+- `ADAMCP_DISCOVERY_DIR` or `--discovery-dir` points at a custom manifest directory.
+- `ADAMCP_STDIO_COMMAND` or `--stdio-command` launches an AdaEngine app/server as a child stdio MCP process and proxies bytes transparently.
+
+When multiple live apps are found, use the router tools `adamcp.list_servers` and `adamcp.select_server`. Before publishing, make sure the npm registry target has the `adamcp` package name available; the local npm config used during development currently returns 404 for `npm view adamcp`.
+
 ## AdaUI surface
 
 AdaUI support is intentionally inspection-first. The main flow is:

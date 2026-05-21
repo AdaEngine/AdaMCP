@@ -167,6 +167,8 @@ public enum AdaMCPError: LocalizedError {
     case invalidResourceURI(String)
     case screenshotUnavailable(String)
     case tracingUnavailable
+    case traceFileSessionAlreadyActive
+    case traceFileSessionInactive
     case typeMismatch(expected: String)
     case uiUnavailable
     case uiWindowNotFound(Int)
@@ -200,6 +202,10 @@ public enum AdaMCPError: LocalizedError {
             return reason
         case .tracingUnavailable:
             return "AdaMCP tracing is unavailable in the current runtime."
+        case .traceFileSessionAlreadyActive:
+            return "AdaMCP trace file recording is already active."
+        case .traceFileSessionInactive:
+            return "AdaMCP trace file recording is not active."
         case .typeMismatch(let expected):
             return "Failed to serialize value as expected type '\(expected)'."
         case .uiUnavailable:
@@ -291,6 +297,10 @@ public extension AdaMCPError {
             )
         case .tracingUnavailable:
             return .init(code: "tracing_unavailable", message: self.errorDescription ?? "", details: nil)
+        case .traceFileSessionAlreadyActive:
+            return .init(code: "trace_file_session_already_active", message: self.errorDescription ?? "", details: nil)
+        case .traceFileSessionInactive:
+            return .init(code: "trace_file_session_inactive", message: self.errorDescription ?? "", details: nil)
         case .typeMismatch(let expected):
             return .init(
                 code: "type_mismatch",

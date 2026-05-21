@@ -15,6 +15,8 @@ public struct MCPServerConfiguration: Sendable {
     public let registerTypes: (@MainActor (MCPIntrospectionRegistry) -> Void)?
     public let captureOverride: RenderCaptureService.CaptureOverride?
     public let traceRecorder: AdaMCPTraceRecorder?
+    public let enableDiscovery: Bool
+    public let discoveryMetadata: [String: String]
 
     public init(
         enableHTTP: Bool = true,
@@ -27,7 +29,9 @@ public struct MCPServerConfiguration: Sendable {
         instructions: String? = "Inspect live AdaEngine worlds, entities, resources, assets, and render captures.",
         registerTypes: (@MainActor (MCPIntrospectionRegistry) -> Void)? = nil,
         captureOverride: RenderCaptureService.CaptureOverride? = nil,
-        traceRecorder: AdaMCPTraceRecorder? = AdaMCPTraceRecorder()
+        traceRecorder: AdaMCPTraceRecorder? = AdaMCPTraceRecorder(),
+        enableDiscovery: Bool = true,
+        discoveryMetadata: [String: String] = [:]
     ) {
         self.enableHTTP = enableHTTP
         self.enableStdio = enableStdio
@@ -40,6 +44,8 @@ public struct MCPServerConfiguration: Sendable {
         self.registerTypes = registerTypes
         self.captureOverride = captureOverride
         self.traceRecorder = traceRecorder
+        self.enableDiscovery = enableDiscovery
+        self.discoveryMetadata = discoveryMetadata
     }
 }
 
@@ -218,6 +224,39 @@ public final class AdaMCPRuntime {
                 annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
             ),
             Tool(
+                name: "render_graph.get",
+                description: "Get the current AdaEngine render graph, backend capabilities, cameras, and render targets.",
+                inputSchema: Self.objectSchema(properties: [
+                    "includeSubgraphs": .object(["type": "boolean"])
+                ]),
+                annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+            ),
+            Tool(
+                name: "render_graph.collect_frames",
+                description: "Enable render graph diagnostics, step N frames, and return CPU-side graph/node execution records.",
+                inputSchema: Self.objectSchema(properties: [
+                    "frames": .object(["type": "integer"]),
+                    "pauseBeforeCapture": .object(["type": "boolean"]),
+                    "clearBeforeCollect": .object(["type": "boolean"])
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+            ),
+            Tool(
+                name: "render_graph.dump_attachment",
+                description: "Dump a camera render graph attachment as PNG when the attachment is color-readable.",
+                inputSchema: Self.objectSchema(properties: [
+                    "cameraEntityId": .object(["type": "integer"]),
+                    "cameraName": .object(["type": "string"]),
+                    "attachment": .object([
+                        "type": "string",
+                        "enum": .array(["main", "output", "depth", "sceneColor", "lightAccum", "shadowMask"].map(Value.string))
+                    ]),
+                    "pauseBeforeCapture": .object(["type": "boolean"]),
+                    "refreshFrame": .object(["type": "boolean"])
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+            ),
+            Tool(
                 name: "trace.list_spans",
                 description: "List finished AdaEngine tracing spans captured by AdaMCP.",
                 inputSchema: Self.objectSchema(properties: [
@@ -244,6 +283,34 @@ public final class AdaMCPRuntime {
                 description: "Clear finished tracing spans captured by AdaMCP.",
                 inputSchema: Self.objectSchema(),
                 annotations: .init(readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false)
+            ),
+            Tool(
+                name: "trace.status",
+                description: "Get AdaMCP tracing memory limits, captured span counts, and file session state.",
+                inputSchema: Self.objectSchema(),
+                annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+            ),
+            Tool(
+                name: "trace.start_file",
+                description: "Start recording newly finished spans to a temporary trace file.",
+                inputSchema: Self.objectSchema(),
+                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+            ),
+            Tool(
+                name: "trace.stop_file",
+                description: "Stop file trace recording, return captured spans, and delete the temporary trace file.",
+                inputSchema: Self.objectSchema(properties: [
+                    "traceId": .object(["type": "string"]),
+                    "nameContains": .object(["type": "string"]),
+                    "limit": .object(["type": "integer"])
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false)
+            ),
+            Tool(
+                name: "trace.discard_file",
+                description: "Stop file trace recording and delete the temporary trace file without returning spans.",
+                inputSchema: Self.objectSchema(),
+                annotations: .init(readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false)
             ),
             Tool(
                 name: "ui.list_windows",
@@ -455,6 +522,24 @@ public final class AdaMCPRuntime {
                 uri: "ada://traces/otlp",
                 description: "Finished AdaEngine tracing spans as OpenTelemetry OTLP JSON.",
                 mimeType: "application/json"
+            ),
+            MCP.Resource(
+                name: "Render Graphs",
+                uri: "ada://render/graphs",
+                description: "Current AdaEngine render graph snapshot, backend capabilities, cameras, and render targets.",
+                mimeType: "application/json"
+            ),
+            MCP.Resource(
+                name: "Recent Render Graph Frames",
+                uri: "ada://render/frames/recent",
+                description: "Recent AdaEngine render graph diagnostic frame records.",
+                mimeType: "application/json"
+            ),
+            MCP.Resource(
+                name: "Render Cameras",
+                uri: "ada://render/cameras",
+                description: "Current AdaEngine render cameras and target attachments.",
+                mimeType: "application/json"
             )
         ]
 
@@ -527,6 +612,13 @@ public final class AdaMCPRuntime {
                 title: "Trace Export",
                 description: "Trace export by format: spans or otlp.",
                 mimeType: "application/json"
+            ),
+            MCP.Resource.Template(
+                uriTemplate: "ada://render/graph/{label}",
+                name: "Render Graph Snapshot",
+                title: "Render Graph Snapshot",
+                description: "AdaEngine render graph snapshot by graph or subgraph label.",
+                mimeType: "application/json"
             )
         ]
     }
@@ -565,12 +657,26 @@ public final class AdaMCPRuntime {
                 payload = try await self.stepFramePayload(frames: arguments["frames"]?.intValue ?? 1)
             case "render.capture_screenshot":
                 payload = try await self.captureScreenshotPayload(arguments: arguments)
+            case "render_graph.get":
+                payload = try self.renderGraphGetPayload(arguments: arguments)
+            case "render_graph.collect_frames":
+                payload = try await self.renderGraphCollectFramesPayload(arguments: arguments)
+            case "render_graph.dump_attachment":
+                payload = try await self.renderGraphDumpAttachmentPayload(arguments: arguments)
             case "trace.list_spans":
                 payload = try self.traceSpansPayload(arguments: arguments)
             case "trace.export_otlp":
                 payload = try self.traceOTLPPayload(arguments: arguments)
             case "trace.clear":
                 payload = try self.traceClearPayload()
+            case "trace.status":
+                payload = try self.traceStatusPayload()
+            case "trace.start_file":
+                payload = try self.traceStartFilePayload()
+            case "trace.stop_file":
+                payload = try self.traceStopFilePayload(arguments: arguments)
+            case "trace.discard_file":
+                payload = try self.traceDiscardFilePayload()
             case "ui.list_windows":
                 payload = try self.uiListWindowsPayload()
             case "ui.get_window":
@@ -643,6 +749,8 @@ public final class AdaMCPRuntime {
             payload = try self.uiResourcePayload(url: url, uri: uri)
         case "traces":
             payload = try self.traceResourcePayload(url: url, uri: uri)
+        case "render":
+            payload = try self.renderResourcePayload(url: url, uri: uri)
         default:
             throw AdaMCPError.invalidResourceURI(uri)
         }

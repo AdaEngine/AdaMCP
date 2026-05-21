@@ -12,6 +12,7 @@ public struct MCPPlugin: Plugin {
         let logger = Logger(label: "org.adaengine.mcp.plugin")
         var httpController: AdaMCPHTTPServerController?
         var stdioController: AdaMCPStdioServerController?
+        var discoveryPublisher: AdaMCPDiscoveryPublisher?
         var renderCaptureService: RenderCaptureService?
         var traceRecorder: AdaMCPTraceRecorder?
     }
@@ -74,14 +75,27 @@ public struct MCPPlugin: Plugin {
                 do {
                     let endpointURL = try await controller.start(configuration: configuration)
                     self.state.runtimeResource.updateHTTP(endpointURL: endpointURL, isRunning: true)
+                    if configuration.enableDiscovery {
+                        let publisher = AdaMCPDiscoveryPublisher()
+                        do {
+                            try publisher.start(endpointURL: endpointURL, configuration: configuration)
+                            self.state.discoveryPublisher = publisher
+                        } catch {
+                            self.state.logger.warning("Failed to publish AdaMCP discovery manifest: \(error.localizedDescription)")
+                        }
+                    }
                     self.state.logger.info("AdaMCP HTTP server is active at \(endpointURL.absoluteString)")
                 } catch {
                     self.state.logger.error("Failed to start MCP HTTP server: \(error.localizedDescription)")
+                    self.state.discoveryPublisher?.stop()
+                    self.state.discoveryPublisher = nil
                     self.state.runtimeResource.updateHTTP(endpointURL: nil, isRunning: false)
                 }
             }
         } else {
             state.runtimeResource.updateHTTP(endpointURL: nil, isRunning: false)
+            state.discoveryPublisher?.stop()
+            state.discoveryPublisher = nil
             state.logger.info("AdaMCP HTTP server transport is disabled")
         }
 
@@ -111,12 +125,14 @@ public struct MCPPlugin: Plugin {
 
     public func destroy(for app: borrowing AppWorlds) {
         Task { @MainActor in
+            self.state.discoveryPublisher?.stop()
             await self.state.httpController?.stop()
             await self.state.stdioController?.stop()
             self.state.runtimeResource.updateHTTP(endpointURL: nil, isRunning: false)
             self.state.runtimeResource.updateStdio(isRunning: false)
             self.state.httpController = nil
             self.state.stdioController = nil
+            self.state.discoveryPublisher = nil
             self.state.logger.info("AdaMCP server transports stopped")
         }
     }

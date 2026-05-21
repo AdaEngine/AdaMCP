@@ -52,6 +52,7 @@ This gives you:
 - render capture
 - AdaUI inspection and safe actions
 - transport startup and shutdown tied to the app lifecycle
+- discovery manifests for local `npx adamcp` clients
 
 ## Run a server from a runtime
 
@@ -80,6 +81,27 @@ let server = await AdaMCPServerFactory.makeServer(
     )
 )
 ```
+
+## Connect from an agent with npx
+
+Use the npm CLI package as the agent-facing MCP server:
+
+```json
+{
+  "mcpServers": {
+    "adamcp": {
+      "command": "npx",
+      "args": ["-y", "adamcp@latest"]
+    }
+  }
+}
+```
+
+`adamcp` speaks stdio MCP to the agent, discovers live AdaMCP HTTP endpoints, and proxies requests to the selected AdaEngine app. If there is no live app, it starts as `adamcp-router` and reports that the AdaEngine app must be built and launched before inspection can continue.
+
+The CLI accepts `ADAMCP_URL`/`--url` for a direct endpoint, `ADAMCP_SERVER`/`--server` for a manifest id or unique server name, `ADAMCP_DISCOVERY_DIR`/`--discovery-dir` for custom discovery storage, and `ADAMCP_STDIO_COMMAND`/`--stdio-command` to launch a child stdio MCP process. When several apps are live, call `adamcp.list_servers` and `adamcp.select_server`.
+
+The npm publish target must have the `adamcp` package name available. During development, the configured local npm registry returned 404 for `npm view adamcp`.
 
 ## Transport model
 

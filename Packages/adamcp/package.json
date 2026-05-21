@@ -1,0 +1,22 @@
+{
+  "name": "adamcp",
+  "version": "0.1.0",
+  "description": "stdio MCP router for live AdaMCP HTTP servers",
+  "type": "module",
+  "bin": {
+    "adamcp": "./bin/adamcp.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}
