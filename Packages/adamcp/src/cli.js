@@ -1,13 +1,20 @@
 import { spawn } from "node:child_process";
+import { ProfilerServer } from "./profiler-server.js";
 import { AdamcpRouter } from "./router.js";
 import { readFrames, writeFrame } from "./stdio.js";
 
 export function parseArgs(argv = process.argv.slice(2), env = process.env) {
+  argv = [...argv];
   const options = {
+    command: argv[0] === "profiler" ? argv.shift() : "mcp",
     url: env.ADAMCP_URL,
     server: env.ADAMCP_SERVER,
     discoveryDir: env.ADAMCP_DISCOVERY_DIR,
-    stdioCommand: env.ADAMCP_STDIO_COMMAND
+    stdioCommand: env.ADAMCP_STDIO_COMMAND,
+    sessionsDir: env.ADAMCP_PROFILES_DIR,
+    host: "127.0.0.1",
+    port: 0,
+    openBrowser: true
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -20,6 +27,14 @@ export function parseArgs(argv = process.argv.slice(2), env = process.env) {
       options.discoveryDir = argv[++index];
     } else if (arg === "--stdio-command") {
       options.stdioCommand = argv[++index];
+    } else if (arg === "--sessions-dir") {
+      options.sessionsDir = argv[++index];
+    } else if (arg === "--host") {
+      options.host = argv[++index];
+    } else if (arg === "--port") {
+      options.port = Number(argv[++index]);
+    } else if (arg === "--no-open") {
+      options.openBrowser = false;
     } else if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else {
@@ -34,6 +49,11 @@ export async function main(argv = process.argv.slice(2), streams = process) {
   const options = parseArgs(argv);
   if (options.help) {
     streams.stdout.write(helpText());
+    return;
+  }
+
+  if (options.command === "profiler") {
+    await runProfiler(options, streams);
     return;
   }
 
@@ -76,6 +96,30 @@ export async function main(argv = process.argv.slice(2), streams = process) {
   }
 
   await shutdown();
+}
+
+export async function runProfiler(options, streams = process) {
+  const profiler = new ProfilerServer(options);
+  const address = await profiler.start();
+  streams.stdout.write(`AdaMCP Profiler: ${address}\n`);
+
+  const shutdown = async () => {
+    await profiler.close();
+  };
+  process.once("beforeExit", shutdown);
+  process.once("SIGINT", async () => {
+    await shutdown();
+    process.exit(130);
+  });
+  process.once("SIGTERM", async () => {
+    await shutdown();
+    process.exit(143);
+  });
+
+  if (options.openBrowser && process.platform === "darwin") {
+    const child = spawn("open", [address], { detached: true, stdio: "ignore" });
+    child.unref();
+  }
 }
 
 export async function runChildStdioProxy(command, streams = process) {
@@ -126,6 +170,7 @@ export async function runChildStdioProxy(command, streams = process) {
 
 function helpText() {
   return `Usage: adamcp [--url URL] [--server ID_OR_NAME] [--discovery-dir DIR]\n` +
-    `       adamcp --stdio-command COMMAND\n\n` +
-    `Environment: ADAMCP_URL, ADAMCP_SERVER, ADAMCP_DISCOVERY_DIR, ADAMCP_STDIO_COMMAND\n`;
+    `       adamcp --stdio-command COMMAND\n` +
+    `       adamcp profiler [--host 127.0.0.1] [--port 0] [--no-open] [--sessions-dir DIR]\n\n` +
+    `Environment: ADAMCP_URL, ADAMCP_SERVER, ADAMCP_DISCOVERY_DIR, ADAMCP_STDIO_COMMAND, ADAMCP_PROFILES_DIR\n`;
 }

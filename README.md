@@ -86,6 +86,18 @@ Useful overrides:
 
 When multiple live apps are found, use the router tools `adamcp.list_servers` and `adamcp.select_server`. Before publishing, make sure the npm registry target has the `adamcp` package name available; the local npm config used during development currently returns 404 for `npm view adamcp`.
 
+## Local web profiler
+
+Launch the CPU-first dashboard while an AdaEngine app with the embedded AdaMCP plugin is running:
+
+```bash
+npx adamcp profiler
+```
+
+The command binds to `127.0.0.1`, discovers live targets through the same manifests as the MCP router, and opens the dashboard. Use `--no-open`, `--port`, `--server`, or `--sessions-dir` to override the defaults. Live mode exposes bounded frame/ECS/render/display aggregates and process footprint. A frame capture records full spans for five seconds by default, persists `manifest.json`, `events.json`, `summary.json`, `capture.json`, and a Perfetto-compatible `trace.json`, then loads the trace into the embedded Perfetto UI without uploading capture data.
+
+Agents can use `adamcp.profiler.status`, `adamcp.profiler.start`, `adamcp.profiler.stop`, `adamcp.profiler.get_report`, and `adamcp.profiler.export`. The embedded runtime also exposes the corresponding `profiler.*` tools and `ada://profiler/*` resources. Hangs, allocation stacks, symbolication, GPU counters, and Metal capture are reported as unsupported in this CPU-first increment; the dashboard does not synthesize those measurements.
+
 ## AdaUI surface
 
 AdaUI support is intentionally inspection-first. The main flow is:

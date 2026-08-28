@@ -66,6 +66,25 @@ test("router lists multiple servers and selects by id", async () => {
 
     const tools = await router.handle({ jsonrpc: "2.0", id: 4, method: "tools/list", params: {} });
     assert.equal(tools.result.tools[0].name, "world.list_worlds");
+    assert.ok(tools.result.tools.some((tool) => tool.name === "adamcp.profiler.status"));
+
+    const profilerStatus = await router.handle({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/call",
+      params: { name: "adamcp.profiler.status", arguments: {} }
+    });
+    const statusPayload = JSON.parse(profilerStatus.result.content[0].text);
+    assert.equal(statusPayload.capabilities.providers.cpuFrame.supported, true);
+    assert.equal(statusPayload.live.summary.fps, 60);
+
+    const report = await router.handle({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "tools/call",
+      params: { name: "adamcp.profiler.get_report", arguments: { id: "capture-1" } }
+    });
+    assert.equal(JSON.parse(report.result.content[0].text).manifest.id, "capture-1");
 
     await router.close();
   } finally {

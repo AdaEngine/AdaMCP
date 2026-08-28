@@ -207,6 +207,11 @@ struct AdaMCPTests {
         #expect(tools.contains { $0.name == "render_graph.get" })
         #expect(tools.contains { $0.name == "render_graph.collect_frames" })
         #expect(tools.contains { $0.name == "render_graph.dump_attachment" })
+        #expect(tools.contains { $0.name == "profiler.capabilities" })
+        #expect(tools.contains { $0.name == "profiler.live_snapshot" })
+        #expect(tools.contains { $0.name == "profiler.start_capture" })
+        #expect(tools.contains { $0.name == "profiler.stop_capture" })
+        #expect(tools.contains { $0.name == "profiler.get_capture" })
 
         let (resources, _) = try await client.listResources()
         #expect(resources.contains { $0.uri == "ada://worlds" })
@@ -214,10 +219,13 @@ struct AdaMCPTests {
         #expect(resources.contains { $0.uri == "ada://render/graphs" })
         #expect(resources.contains { $0.uri == "ada://render/frames/recent" })
         #expect(resources.contains { $0.uri == "ada://render/cameras" })
+        #expect(resources.contains { $0.uri == "ada://profiler/live" })
+        #expect(resources.contains { $0.uri == "ada://profiler/captures" })
 
         let (templates, _) = try await client.listResourceTemplates()
         #expect(templates.contains { $0.uriTemplate == "ada://entity/{world}/{id}" })
         #expect(templates.contains { $0.uriTemplate == "ada://render/graph/{label}" })
+        #expect(templates.contains { $0.uriTemplate == "ada://profiler/capture/{id}" })
 
         let worldContents = try await client.readResource(uri: "ada://worlds")
         let worldsPayload = try self.decodeResourcePayload(worldContents)

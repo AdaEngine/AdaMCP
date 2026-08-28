@@ -25,8 +25,15 @@ export class AdamcpRouter {
       return this.routerInitializeResponse(request.id);
     }
 
-    if (request.method === "tools/list" && !this.client) {
-      return result(request.id, { tools: routerTools() });
+    if (request.method === "tools/list") {
+      if (!this.client) {
+        return result(request.id, { tools: [...routerTools(), ...profilerTools()] });
+      }
+      const downstream = await this.client.request(request);
+      if (downstream?.result?.tools) {
+        downstream.result.tools = [...downstream.result.tools, ...routerTools(), ...profilerTools()];
+      }
+      return downstream;
     }
 
     if (request.method === "tools/call" && this.isRouterTool(request.params?.name)) {
@@ -120,9 +127,64 @@ export class AdamcpRouter {
         }
         return toolResult({ selectedServer: selected, initializeResult: initializeResponse.result });
       }
+      case "adamcp.profiler.status":
+        return this.callProfilerStatus();
+      case "adamcp.profiler.start":
+        return this.callDownstreamProfiler("profiler.start_capture", args);
+      case "adamcp.profiler.stop":
+        return this.callDownstreamProfiler("profiler.stop_capture", args);
+      case "adamcp.profiler.get_report":
+        return this.callDownstreamProfiler("profiler.get_capture", args);
+      case "adamcp.profiler.export": {
+        const report = await this.downstreamProfilerPayload("profiler.get_capture", args);
+        return toolResult(args.format === "trace" ? report.trace : report);
+      }
       default:
         return toolResult({ message: `Unknown router tool '${params.name}'.` }, true);
     }
+  }
+
+  async callProfilerStatus() {
+    try {
+      const [capabilities, live, captures] = await Promise.all([
+        this.downstreamProfilerPayload("profiler.capabilities"),
+        this.downstreamProfilerPayload("profiler.live_snapshot"),
+        this.downstreamProfilerPayload("profiler.list_captures")
+      ]);
+      return toolResult({ selectedServer: this.selectedServer, capabilities, live, captures });
+    } catch (errorObject) {
+      return toolResult({ message: errorObject.message }, true);
+    }
+  }
+
+  async callDownstreamProfiler(name, args) {
+    try {
+      return toolResult(await this.downstreamProfilerPayload(name, args));
+    } catch (errorObject) {
+      return toolResult({ message: errorObject.message }, true);
+    }
+  }
+
+  async downstreamProfilerPayload(name, args = {}) {
+    if (!this.client) {
+      throw new Error(this.statusMessage());
+    }
+    const response = await this.client.request({
+      jsonrpc: "2.0",
+      id: `adamcp-profiler-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      method: "tools/call",
+      params: { name, arguments: args }
+    });
+    if (response?.error) {
+      throw new Error(response.error.message);
+    }
+    const resultObject = response?.result;
+    const text = resultObject?.content?.find((content) => content.type === "text")?.text;
+    const payload = text ? JSON.parse(text) : null;
+    if (resultObject?.isError) {
+      throw new Error(payload?.message ?? "AdaMCP profiler request failed.");
+    }
+    return payload;
   }
 
   async refreshManifests() {
@@ -130,7 +192,10 @@ export class AdamcpRouter {
   }
 
   isRouterTool(name) {
-    return name === "adamcp.status" || name === "adamcp.list_servers" || name === "adamcp.select_server";
+    return name === "adamcp.status"
+      || name === "adamcp.list_servers"
+      || name === "adamcp.select_server"
+      || name?.startsWith("adamcp.profiler.");
   }
 
   routerInitializeResponse(id) {
@@ -182,6 +247,44 @@ function routerTools() {
         server: { type: "string" },
         serverName: { type: "string" },
         name: { type: "string" }
+      })
+    }
+  ];
+}
+
+function profilerTools() {
+  return [
+    {
+      name: "adamcp.profiler.status",
+      description: "Return profiler capabilities, live metrics, and capture state for the selected AdaEngine app.",
+      inputSchema: objectSchema()
+    },
+    {
+      name: "adamcp.profiler.start",
+      description: "Start a bounded frame profiler capture in the selected AdaEngine app.",
+      inputSchema: objectSchema({
+        preset: { type: "string", enum: ["frame"] },
+        durationMs: { type: "integer" },
+        frameCount: { type: "integer" },
+        frameBudgetMs: { type: "number" }
+      })
+    },
+    {
+      name: "adamcp.profiler.stop",
+      description: "Stop the active profiler capture and return its report.",
+      inputSchema: objectSchema({ id: { type: "string" } })
+    },
+    {
+      name: "adamcp.profiler.get_report",
+      description: "Get an active or completed profiler report.",
+      inputSchema: objectSchema({ id: { type: "string" } })
+    },
+    {
+      name: "adamcp.profiler.export",
+      description: "Export a profiler capture as the full report or a Perfetto-compatible trace object.",
+      inputSchema: objectSchema({
+        id: { type: "string" },
+        format: { type: "string", enum: ["report", "trace"] }
       })
     }
   ];

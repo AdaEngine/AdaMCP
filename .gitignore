@@ -1,4 +1,5 @@
 .build
 .swiftpm/
+Packages/adamcp/node_modules/
 
 Package.resolved

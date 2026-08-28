@@ -73,7 +73,38 @@ function responseFor(name, message) {
       }
     };
   }
+  if (message.method === "tools/call") {
+    const toolName = message.params?.name;
+    const captureID = message.params?.arguments?.id ?? "capture-1";
+    const payloads = {
+      "profiler.capabilities": { providers: { cpuFrame: { supported: true } } },
+      "profiler.live_snapshot": { summary: { frameCount: 3, fps: 60 } },
+      "profiler.list_captures": { activeCapture: null, captures: [] },
+      "profiler.start_capture": { id: captureID, state: "recording", durationMs: 5000 },
+      "profiler.stop_capture": fakeCapture(captureID),
+      "profiler.get_capture": fakeCapture(captureID)
+    };
+    const payload = payloads[toolName] ?? { message: `Unknown fake tool ${toolName}` };
+    return {
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        content: [{ type: "text", text: JSON.stringify(payload) }],
+        isError: !(toolName in payloads)
+      }
+    };
+  }
   return { jsonrpc: "2.0", id: message.id, result: {} };
+}
+
+function fakeCapture(id) {
+  return {
+    manifest: { id, state: "completed", startedAt: "2026-08-05T00:00:00Z" },
+    summary: { frameCount: 3 },
+    trace: { traceEvents: [{ name: "frame", ph: "X", ts: 0, dur: 1000 }] },
+    spans: [],
+    artifacts: []
+  };
 }
 
 function readRequestBody(request) {

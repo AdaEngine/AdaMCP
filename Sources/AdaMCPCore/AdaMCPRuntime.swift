@@ -56,6 +56,7 @@ public final class AdaMCPRuntime {
     let renderCaptureService: RenderCaptureService
     let uiInspectionService: AdaUIInspectionService
     let traceRecorder: AdaMCPTraceRecorder?
+    let profiler: AdaMCPProfiler
     private let logger: Logger
 
     public init(
@@ -70,6 +71,7 @@ public final class AdaMCPRuntime {
         self.renderCaptureService = renderCaptureService
         self.uiInspectionService = AdaUIInspectionService(appWorlds: appWorlds)
         self.traceRecorder = traceRecorder
+        self.profiler = AdaMCPProfiler(traceRecorder: traceRecorder)
         self.logger = logger
     }
 
@@ -255,6 +257,54 @@ public final class AdaMCPRuntime {
                     "refreshFrame": .object(["type": "boolean"])
                 ]),
                 annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+            ),
+            Tool(
+                name: "profiler.capabilities",
+                description: "Report profiler presets and runtime providers available for this AdaEngine app.",
+                inputSchema: Self.objectSchema(),
+                annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+            ),
+            Tool(
+                name: "profiler.live_snapshot",
+                description: "Return bounded live frame, ECS, render, display, and process-memory metrics.",
+                inputSchema: Self.objectSchema(properties: [
+                    "limit": .object(["type": "integer"]),
+                    "frameBudgetMs": .object(["type": "number"])
+                ]),
+                annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+            ),
+            Tool(
+                name: "profiler.start_capture",
+                description: "Start one bounded detailed profiler capture. CPU-first v1 supports the frame preset.",
+                inputSchema: Self.objectSchema(properties: [
+                    "preset": .object(["type": "string", "enum": .array(["frame"].map(Value.string))]),
+                    "durationMs": .object(["type": "integer"]),
+                    "frameCount": .object(["type": "integer"]),
+                    "frameBudgetMs": .object(["type": "number"])
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+            ),
+            Tool(
+                name: "profiler.stop_capture",
+                description: "Stop the active profiler capture and return its summary, spans, and Perfetto-compatible trace events.",
+                inputSchema: Self.objectSchema(properties: [
+                    "id": .object(["type": "string"])
+                ]),
+                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+            ),
+            Tool(
+                name: "profiler.get_capture",
+                description: "Get an active or recently completed profiler capture by id.",
+                inputSchema: Self.objectSchema(properties: [
+                    "id": .object(["type": "string"])
+                ]),
+                annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+            ),
+            Tool(
+                name: "profiler.list_captures",
+                description: "List active and recently completed in-process profiler captures.",
+                inputSchema: Self.objectSchema(),
+                annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
             ),
             Tool(
                 name: "trace.list_spans",
@@ -524,6 +574,18 @@ public final class AdaMCPRuntime {
                 mimeType: "application/json"
             ),
             MCP.Resource(
+                name: "Profiler Live Snapshot",
+                uri: "ada://profiler/live",
+                description: "Bounded live AdaEngine performance metrics.",
+                mimeType: "application/json"
+            ),
+            MCP.Resource(
+                name: "Profiler Captures",
+                uri: "ada://profiler/captures",
+                description: "Active and recently completed profiler captures.",
+                mimeType: "application/json"
+            ),
+            MCP.Resource(
                 name: "Render Graphs",
                 uri: "ada://render/graphs",
                 description: "Current AdaEngine render graph snapshot, backend capabilities, cameras, and render targets.",
@@ -619,6 +681,13 @@ public final class AdaMCPRuntime {
                 title: "Render Graph Snapshot",
                 description: "AdaEngine render graph snapshot by graph or subgraph label.",
                 mimeType: "application/json"
+            ),
+            MCP.Resource.Template(
+                uriTemplate: "ada://profiler/capture/{id}",
+                name: "Profiler Capture",
+                title: "Profiler Capture",
+                description: "Profiler capture by session identifier.",
+                mimeType: "application/json"
             )
         ]
     }
@@ -663,6 +732,21 @@ public final class AdaMCPRuntime {
                 payload = try await self.renderGraphCollectFramesPayload(arguments: arguments)
             case "render_graph.dump_attachment":
                 payload = try await self.renderGraphDumpAttachmentPayload(arguments: arguments)
+            case "profiler.capabilities":
+                payload = self.profiler.capabilitiesPayload()
+            case "profiler.live_snapshot":
+                payload = try self.profiler.liveSnapshotPayload(
+                    limit: arguments["limit"]?.intValue ?? 120,
+                    frameBudgetMilliseconds: arguments["frameBudgetMs"]?.doubleValue ?? 16.67
+                )
+            case "profiler.start_capture":
+                payload = try self.profiler.startCapture(arguments: arguments)
+            case "profiler.stop_capture":
+                payload = try self.profiler.stopCapture(arguments: arguments)
+            case "profiler.get_capture":
+                payload = try self.profiler.capturePayload(id: arguments["id"]?.stringValue)
+            case "profiler.list_captures":
+                payload = try self.profiler.captureListPayload()
             case "trace.list_spans":
                 payload = try self.traceSpansPayload(arguments: arguments)
             case "trace.export_otlp":
@@ -749,6 +833,8 @@ public final class AdaMCPRuntime {
             payload = try self.uiResourcePayload(url: url, uri: uri)
         case "traces":
             payload = try self.traceResourcePayload(url: url, uri: uri)
+        case "profiler":
+            payload = try self.profilerResourcePayload(url: url, uri: uri)
         case "render":
             payload = try self.renderResourcePayload(url: url, uri: uri)
         default:
