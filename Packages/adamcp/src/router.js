@@ -1,3 +1,5 @@
+import { open } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import { scanManifests, resolveServer } from "./discovery.js";
 import { defaultInitializeParams, HttpMcpClient } from "./http-proxy.js";
 
@@ -110,6 +112,37 @@ export class AdamcpRouter {
   async callRouterTool(params = {}) {
     const args = params.arguments ?? {};
     switch (params.name) {
+      case "adamcp.run_file": {
+        const client = this.client;
+        if (!client) return toolResult({ message: this.statusMessage() }, true);
+        let file;
+        try {
+          if (typeof args.path !== "string" || !isAbsolute(args.path)) {
+            throw new Error("path must be an absolute local scenario file path.");
+          }
+          file = await open(args.path, "r");
+          const stat = await file.stat();
+          if (!stat.isFile() || stat.size > 1048576) throw new Error("Scenario must be a regular file no larger than 1 MiB.");
+          const buffer = Buffer.alloc(1048577);
+          let length = 0;
+          while (length < buffer.length) {
+            const { bytesRead } = await file.read(buffer, length, buffer.length - length, null);
+            if (!bytesRead) break;
+            length += bytesRead;
+          }
+          if (length > 1048576) throw new Error("Scenario exceeds 1 MiB.");
+          const source = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, length));
+          const response = await client.request({
+            jsonrpc: "2.0", id: `adamcp-flow-${Date.now()}`, method: "tools/call",
+            params: { name: "automation.run", arguments: { source } }
+          });
+          return response?.result ?? toolResult({ message: response?.error?.message ?? "No scenario response." }, true);
+        } catch (error) {
+          return toolResult({ message: error.message }, true);
+        } finally {
+          await file?.close();
+        }
+      }
       case "adamcp.status":
         await this.refreshManifests();
         return toolResult(this.statusPayload());
@@ -192,7 +225,8 @@ export class AdamcpRouter {
   }
 
   isRouterTool(name) {
-    return name === "adamcp.status"
+    return name === "adamcp.run_file"
+      || name === "adamcp.status"
       || name === "adamcp.list_servers"
       || name === "adamcp.select_server"
       || name?.startsWith("adamcp.profiler.");
@@ -229,6 +263,12 @@ export class AdamcpRouter {
 
 function routerTools() {
   return [
+    {
+      name: "adamcp.run_file",
+      description: "Read a local UTF-8 YAML/JSON scenario (max 1 MiB) and execute it on the selected AdaMCP server. Path is on the router host. Stops on error; prior steps remain applied.",
+      inputSchema: objectSchema({ path: { type: "string" } }, ["path"]),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
+    },
     {
       name: "adamcp.status",
       description: "Show AdaMCP router status and explain whether a live AdaEngine app is available.",

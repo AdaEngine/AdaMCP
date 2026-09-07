@@ -51,6 +51,7 @@ public struct MCPServerConfiguration: Sendable {
 
 @MainActor
 public final class AdaMCPRuntime {
+    var automationIsRunning = false
     let appWorlds: AppWorlds
     let registry: MCPIntrospectionRegistry
     let renderCaptureService: RenderCaptureService
@@ -76,7 +77,7 @@ public final class AdaMCPRuntime {
     }
 
     public func tools() -> [Tool] {
-        [
+        automationTools() + [
             Tool(
                 name: "world.list_worlds",
                 description: "List all live AdaEngine worlds.",
@@ -696,6 +697,12 @@ public final class AdaMCPRuntime {
         do {
             let payload: Value
             switch name {
+            case "automation.run":
+                return try await runAutomation(arguments: arguments)
+            case "automation.capabilities":
+                payload = automationCapabilities()
+            case "logs.read":
+                payload = try await logsPayload(arguments: arguments)
             case "world.list_worlds":
                 payload = try self.listWorldsPayload()
             case "world.get":
@@ -719,9 +726,9 @@ public final class AdaMCPRuntime {
             case "asset.get":
                 payload = try await self.assetGetPayload(arguments: arguments)
             case "runtime.pause":
-                payload = try self.pausePayload(reason: arguments["reason"]?.stringValue)
+                payload = try await appWorlds.withWorldAccess { try self.pausePayload(reason: arguments["reason"]?.stringValue) }
             case "runtime.resume":
-                payload = try self.resumePayload()
+                payload = try await appWorlds.withWorldAccess { try self.resumePayload() }
             case "runtime.step_frame":
                 payload = try await self.stepFramePayload(frames: arguments["frames"]?.intValue ?? 1)
             case "render.capture_screenshot":
@@ -844,7 +851,7 @@ public final class AdaMCPRuntime {
         return try self.jsonResourceResult(payload, uri: uri)
     }
 
-    private static func objectSchema(
+    static func objectSchema(
         properties: [String: Value] = [:],
         required: [String] = []
     ) -> Value {
@@ -858,7 +865,7 @@ public final class AdaMCPRuntime {
         return .object(schema)
     }
 
-    private func jsonToolResult(_ payload: Value, isError: Bool = false) throws -> CallTool.Result {
+    func jsonToolResult(_ payload: Value, isError: Bool = false) throws -> CallTool.Result {
         let text = try self.prettyJSONString(payload)
         return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: isError)
     }

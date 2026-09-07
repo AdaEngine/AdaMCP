@@ -5,9 +5,9 @@ import MCP
 @MainActor
 enum AdaMCPBuiltins {
     static func registerDefaultTypes(in registry: MCPIntrospectionRegistry) {
-        registry.registerCodable(Transform.self, kind: .component)
+        registry.registerWritableComponent(Transform.self)
         registry.registerCodable(GlobalTransform.self, kind: .component)
-        registry.registerCodable(SimulationControl.self, kind: .resource)
+        registry.registerWritableResource(SimulationControl.self)
         registry.registerDescriptor(
             MCPTypeDescriptor(
                 name: String(reflecting: Camera.self),

@@ -2,4 +2,6 @@
 .swiftpm/
 Packages/adamcp/node_modules/
 
+.DS_Store
+
 Package.resolved

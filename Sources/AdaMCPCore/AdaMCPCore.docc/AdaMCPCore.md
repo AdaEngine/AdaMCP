@@ -26,6 +26,7 @@ Use `ui.capture_node_screenshot` when an agent needs visual context for one UI e
 
 - <doc:Getting-Started-With-AdaMCP>
 - <doc:AdaUI-Inspection-and-Automation>
+- <doc:Automation-Scenarios>
 
 ### Core types
 

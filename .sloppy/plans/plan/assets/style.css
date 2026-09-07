@@ -1,0 +1,521 @@
+:root {
+  color-scheme: light;
+  --page-bg: #f6f3ec;
+  --paper: #fffdf8;
+  --paper-soft: #f0ece2;
+  --paper-strong: #e5ded1;
+  --ink: #191612;
+  --muted: #766f65;
+  --faint: #aaa195;
+  --line: #d8d0c2;
+  --accent: #d76f51;
+  --accent-soft: #fff1ea;
+  --accent-strong: #b84f34;
+  --success: #698a55;
+  --warn: #ad7b2b;
+  --danger: #c45c48;
+  --diff-add-bg: rgba(105, 138, 85, 0.16);
+  --diff-add-fg: #3f6f2a;
+  --diff-delete-bg: rgba(196, 92, 72, 0.14);
+  --diff-delete-fg: #a43d2b;
+  --diff-hunk-bg: rgba(215, 111, 81, 0.12);
+  --diff-hunk-fg: #9b4b31;
+  --diff-meta-fg: #766f65;
+  --code-symbol-fg: #9b4b31;
+  --code-file-fg: #3f6f2a;
+  --code-path-fg: #ad7b2b;
+  --code-muted-fg: #766f65;
+  --syntax-keyword-fg: #b84f34;
+  --syntax-type-fg: #7b5fb2;
+  --syntax-string-fg: #3f6f2a;
+  --syntax-number-fg: #9b4b31;
+  --syntax-comment-fg: #8f877a;
+  --code-bg: #121311;
+  --code-fg: #f4efe5;
+  --shadow: 0 18px 60px rgba(54, 43, 30, 0.08);
+  --mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --serif: ui-serif, Georgia, "Times New Roman", serif;
+  --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page-bg: #0b0b09;
+    --paper: #11110f;
+    --paper-soft: #181713;
+    --paper-strong: #222018;
+    --ink: #f3efe6;
+    --muted: #b2aa9c;
+    --faint: #777063;
+    --line: #3a352b;
+    --accent: #ccff00;
+    --accent-soft: rgba(204, 255, 0, 0.08);
+    --accent-strong: #e2ff62;
+    --success: #00ffff;
+    --warn: #ffcc00;
+    --danger: #ff6b57;
+    --diff-add-bg: rgba(0, 255, 255, 0.14);
+    --diff-add-fg: #72fff4;
+    --diff-delete-bg: rgba(255, 107, 87, 0.16);
+    --diff-delete-fg: #ff9b8d;
+    --diff-hunk-bg: rgba(204, 255, 0, 0.1);
+    --diff-hunk-fg: #e2ff62;
+    --diff-meta-fg: #b2aa9c;
+    --code-symbol-fg: #e2ff62;
+    --code-file-fg: #72fff4;
+    --code-path-fg: #ffcc00;
+    --code-muted-fg: #b2aa9c;
+    --syntax-keyword-fg: #ffcc00;
+    --syntax-type-fg: #72fff4;
+    --syntax-string-fg: #b7ff7a;
+    --syntax-number-fg: #ff9b8d;
+    --syntax-comment-fg: #777063;
+    --code-bg: #050605;
+    --code-fg: #f4f4ee;
+    --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html {
+  min-height: 100%;
+  background:
+    linear-gradient(90deg, rgba(215, 111, 81, 0.06) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(215, 111, 81, 0.05) 1px, transparent 1px),
+    var(--page-bg);
+  background-size: 44px 44px;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: transparent;
+  font: 15px/1.7 var(--sans);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: "Sloppy / plan artifact";
+  display: block;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 14px clamp(18px, 4vw, 56px);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  background: color-mix(in srgb, var(--page-bg) 86%, transparent);
+  backdrop-filter: blur(12px);
+  font: 11px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+main {
+  counter-reset: section;
+  width: min(920px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: clamp(40px, 7vw, 88px) 0 96px;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--ink);
+  font-family: var(--serif);
+  font-weight: 520;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+h1 {
+  max-width: 760px;
+  margin: 0 0 18px;
+  font-size: clamp(2.25rem, 6vw, 4.6rem);
+  line-height: 0.98;
+}
+
+h1::before {
+  content: "Implementation plan";
+  display: block;
+  margin-bottom: 14px;
+  color: var(--faint);
+  font: 11px/1.4 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+h2 {
+  counter-increment: section;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 56px 0 10px;
+  padding-top: 28px;
+  border-top: 1px solid var(--line);
+  font-size: clamp(1.45rem, 3vw, 2.05rem);
+}
+
+h2::before {
+  content: counter(section, decimal-leading-zero);
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: 6px;
+  color: var(--muted);
+  background: var(--paper-strong);
+  font: 11px/1 var(--mono);
+}
+
+h3 {
+  margin: 30px 0 10px;
+  font-size: 1.2rem;
+}
+
+h4, h5, h6 {
+  margin: 24px 0 8px;
+  font-family: var(--mono);
+  font-size: 0.86rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+p {
+  max-width: 780px;
+  margin: 0 0 16px;
+}
+
+h1 + p {
+  max-width: 760px;
+  margin: 18px 0 36px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--paper) 82%, var(--paper-soft));
+  box-shadow: var(--shadow);
+}
+
+a {
+  color: var(--accent-strong);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+hr {
+  height: 1px;
+  margin: 36px 0;
+  border: 0;
+  background: var(--line);
+}
+
+ul, ol {
+  max-width: 780px;
+  margin: 12px 0 18px;
+  padding-left: 0;
+  list-style: none;
+}
+
+li {
+  position: relative;
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+ul li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0.78em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: translateY(-50%);
+}
+
+ol {
+  counter-reset: ordered-list;
+}
+
+ol li {
+  counter-increment: ordered-list;
+  padding-left: 36px;
+}
+
+ol li::before {
+  content: counter(ordered-list, decimal-leading-zero);
+  position: absolute;
+  left: 0;
+  top: 0.15em;
+  color: var(--muted);
+  font: 11px/1 var(--mono);
+}
+
+pre {
+  max-width: 100%;
+  margin: 18px 0 28px;
+  overflow-x: auto;
+  padding: 20px 22px;
+  border: 1px solid color-mix(in srgb, var(--code-fg) 12%, transparent);
+  border-radius: 8px;
+  color: var(--code-fg);
+  background: var(--code-bg);
+  box-shadow: var(--shadow);
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+
+:not(pre) > code {
+  padding: 0.12em 0.36em;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--ink) 84%, var(--accent-strong));
+  background: var(--paper-soft);
+  white-space: nowrap;
+}
+
+h1 code,
+h2 code,
+h3 code {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--accent-strong);
+  background: transparent;
+  font-family: inherit;
+  font-size: 0.94em;
+  font-weight: inherit;
+  white-space: normal;
+}
+
+pre code {
+  display: block;
+  min-width: max-content;
+  font-size: 0.86rem;
+  line-height: 1.65;
+}
+
+pre code.language-diff,
+pre code.language-patch {
+  padding: 4px 0;
+}
+
+pre code.language-text,
+pre code.language-txt,
+pre code.language-plain {
+  padding: 4px 0;
+}
+
+.plan-code-line {
+  display: block;
+  margin: 0 -22px;
+  padding: 0 22px;
+  white-space: pre;
+}
+
+pre code:is(
+  .language-js,
+  .language-jsx,
+  .language-javascript,
+  .language-ts,
+  .language-tsx,
+  .language-typescript,
+  .language-swift
+) {
+  counter-reset: code-line;
+  padding: 4px 0;
+}
+
+pre code:is(
+  .language-js,
+  .language-jsx,
+  .language-javascript,
+  .language-ts,
+  .language-tsx,
+  .language-typescript,
+  .language-swift
+) .plan-code-line {
+  counter-increment: code-line;
+  padding-left: 0;
+}
+
+pre code:is(
+  .language-js,
+  .language-jsx,
+  .language-javascript,
+  .language-ts,
+  .language-tsx,
+  .language-typescript,
+  .language-swift
+) .plan-code-line::before {
+  content: counter(code-line);
+  display: inline-block;
+  width: 4ch;
+  margin-right: 16px;
+  padding-right: 12px;
+  border-right: 1px solid color-mix(in srgb, var(--code-fg) 12%, transparent);
+  color: var(--code-muted-fg);
+  text-align: right;
+  user-select: none;
+}
+
+.plan-code-symbol {
+  color: var(--code-symbol-fg);
+  font-weight: 650;
+}
+
+.plan-code-file {
+  color: var(--code-file-fg);
+}
+
+.plan-code-path {
+  color: var(--code-path-fg);
+}
+
+.plan-code-muted {
+  color: var(--code-muted-fg);
+}
+
+.syntax-keyword {
+  color: var(--syntax-keyword-fg);
+  font-weight: 650;
+}
+
+.syntax-type {
+  color: var(--syntax-type-fg);
+}
+
+.syntax-string {
+  color: var(--syntax-string-fg);
+}
+
+.syntax-number {
+  color: var(--syntax-number-fg);
+}
+
+.syntax-comment {
+  color: var(--syntax-comment-fg);
+  font-style: italic;
+}
+
+.diff-line {
+  display: block;
+  margin: 0 -22px;
+  padding: 0 22px;
+  white-space: pre;
+}
+
+.diff-line-add {
+  color: var(--diff-add-fg);
+  background: var(--diff-add-bg);
+}
+
+.diff-line-delete {
+  color: var(--diff-delete-fg);
+  background: var(--diff-delete-bg);
+}
+
+.diff-line-hunk {
+  color: var(--diff-hunk-fg);
+  background: var(--diff-hunk-bg);
+}
+
+.diff-line-meta,
+.diff-line-file,
+.diff-line-note {
+  color: var(--diff-meta-fg);
+}
+
+.diff-line-meta,
+.diff-line-file {
+  font-weight: 650;
+}
+
+blockquote {
+  max-width: 780px;
+  margin: 22px 0;
+  padding: 16px 18px 16px 20px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--accent-soft);
+}
+
+blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+table {
+  width: 100%;
+  margin: 18px 0 30px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-spacing: 0;
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+}
+
+th, td {
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  padding: 12px 14px;
+  vertical-align: top;
+}
+
+tr:last-child td {
+  border-bottom: 0;
+}
+
+th:last-child,
+td:last-child {
+  border-right: 0;
+}
+
+th {
+  text-align: left;
+  color: var(--muted);
+  background: var(--paper-soft);
+  font: 11px/1.3 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+img, video {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.plan-page > section,
+.plan-page > div {
+  max-width: 100%;
+}
+
+@media (max-width: 720px) {
+  body::before {
+    padding-inline: 18px;
+  }
+
+  main {
+    width: min(100% - 28px, 920px);
+    padding-top: 36px;
+  }
+
+  h2 {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  h1 + p,
+  pre,
+  table {
+    box-shadow: none;
+  }
+}

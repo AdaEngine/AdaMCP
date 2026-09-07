@@ -26,6 +26,7 @@ public struct MCPPlugin: Plugin {
     }
 
     public func setup(in app: borrowing AppWorlds) {
+        RuntimeLogStore.shared.setEnabled(true)
         AdaMCPBuiltins.registerDefaultTypes(in: state.registry)
         configuration.registerTypes?(state.registry)
 

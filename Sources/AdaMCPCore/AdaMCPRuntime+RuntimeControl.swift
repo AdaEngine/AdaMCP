@@ -24,12 +24,13 @@ extension AdaMCPRuntime {
 
     func stepFramePayload(frames: Int) async throws -> Value {
         let frameCount = max(frames, 1)
-        let control = appWorlds.main.getOrInitRefResource(SimulationControl.self) {
-            SimulationControl()
+        let control = try await appWorlds.withWorldAccess {
+            let control = appWorlds.main.getOrInitRefResource(SimulationControl.self) { SimulationControl() }
+            control.wrappedValue.mode = .paused
+            control.wrappedValue.reason = "runtime.step_frame"
+            control.wrappedValue.pendingStepCount += frameCount
+            return control
         }
-        control.wrappedValue.mode = .paused
-        control.wrappedValue.reason = "runtime.step_frame"
-        control.wrappedValue.pendingStepCount += frameCount
 
         for _ in 0..<frameCount {
             try await appWorlds.update()

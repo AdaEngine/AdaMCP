@@ -35,3 +35,10 @@ The server listens on `127.0.0.1` and opens the browser automatically. Options i
 CPU-first v1 provides live frame-time/FPS/memory summaries, bounded frame captures, ECS and render hotspots, display presentation data, and an embedded Perfetto timeline. Unsupported Hangs, Allocations, Symbols, and GPU providers are shown explicitly.
 
 The MCP router also exposes composite tools: `adamcp.profiler.status`, `adamcp.profiler.start`, `adamcp.profiler.stop`, `adamcp.profiler.get_report`, and `adamcp.profiler.export`.
+
+### Run an automation file
+
+Call MCP tool `adamcp.run_file` with `{"path":"/absolute/path/scenario.yaml"}` after selecting a live server.
+The router reads the UTF-8 YAML/JSON file locally (maximum 1 MiB) and forwards its contents to `automation.run`.
+Use `automation.capabilities`, `world.list_worlds`, and `ui.get_tree` to discover live names and targets.
+See [Automation scenarios](../../Sources/AdaMCPCore/AdaMCPCore.docc/Automation-Scenarios.md) for the command reference.

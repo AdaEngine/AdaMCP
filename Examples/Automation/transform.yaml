@@ -1,0 +1,12 @@
+# Replace world and entity with live world.list_worlds / entity.find values.
+- setComponent:
+    world: SceneView.REPLACE_WITH_LIVE_ID
+    entity: 123
+    type: AdaTransform.Transform
+    value:
+      position: {x: 10, y: 20, z: 0}
+      scale: {x: 1, y: 1, z: 1}
+      rotation: {x: 0, y: 0, z: 0, w: 1}
+- wait:
+    milliseconds: 100
+- getMetrics: {}

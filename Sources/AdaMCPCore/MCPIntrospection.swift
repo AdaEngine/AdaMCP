@@ -74,6 +74,12 @@ public final class MCPIntrospectionRegistry {
     private var entriesByName: [String: Entry] = [:]
     private var namesByType: [ObjectIdentifier: String] = [:]
 
+    var componentWriters: [String: (World, Entity.ID, Value) throws -> Void] = [:]
+    var componentRemovers: [String: (World, Entity.ID) -> Void] = [:]
+    var resourceWriters: [String: (World, Value) throws -> Void] = [:]
+    var resourceRemovers: [String: (World) -> Void] = [:]
+    var eventSenders: [String: (World, Value) throws -> Void] = [:]
+
     public init() {}
 
     public func registerDescriptor(_ descriptor: MCPTypeDescriptor) {

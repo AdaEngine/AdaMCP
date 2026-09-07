@@ -157,6 +157,8 @@ private extension AdaMCPTracer {
         private let lock = NSLock()
         private var activeSpanStorage: [InMemorySpanContext: InMemorySpan] = [:]
         private var finishedSpanStorage: [FinishedInMemorySpan] = []
+        /// Oldest entry in the bounded ring. All access is protected by `lock`.
+        private var finishedSpanStart = 0
         private var fileSession: FileSession?
         private var _droppedSpanCount = 0
 
@@ -195,12 +197,22 @@ private extension AdaMCPTracer {
         }
 
         func finishedSpanSnapshot() -> [FinishedInMemorySpan] {
-            lock.withLock { finishedSpanStorage }
+            lock.withLock {
+                guard finishedSpanStart != 0 else {
+                    return finishedSpanStorage
+                }
+                var snapshot: [FinishedInMemorySpan] = []
+                snapshot.reserveCapacity(finishedSpanStorage.count)
+                snapshot.append(contentsOf: finishedSpanStorage[finishedSpanStart...])
+                snapshot.append(contentsOf: finishedSpanStorage[..<finishedSpanStart])
+                return snapshot
+            }
         }
 
         func clearFinishedSpans() {
             lock.withLock {
                 finishedSpanStorage = []
+                finishedSpanStart = 0
                 _droppedSpanCount = 0
             }
         }
@@ -213,11 +225,15 @@ private extension AdaMCPTracer {
             lock.withLock {
                 activeSpanStorage[spanContext] = nil
                 if maxFinishedSpanCount > 0 {
-                    finishedSpanStorage.append(span)
-                    if finishedSpanStorage.count > maxFinishedSpanCount {
-                        let overflow = finishedSpanStorage.count - maxFinishedSpanCount
-                        finishedSpanStorage.removeFirst(overflow)
-                        _droppedSpanCount += overflow
+                    if finishedSpanStorage.count < maxFinishedSpanCount {
+                        finishedSpanStorage.append(span)
+                    } else {
+                        finishedSpanStorage[finishedSpanStart] = span
+                        finishedSpanStart += 1
+                        if finishedSpanStart == finishedSpanStorage.count {
+                            finishedSpanStart = 0
+                        }
+                        _droppedSpanCount += 1
                     }
                 } else {
                     _droppedSpanCount += 1
@@ -484,12 +500,30 @@ public struct AdaMCPTraceRecorder: Sendable {
     public static func makeIDGenerator() -> InMemoryTracer.IDGenerator {
         InMemoryTracer.IDGenerator(
             nextTraceID: {
-                UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+                hexadecimalUUID(byteCount: 16)
             },
             nextSpanID: {
-                String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(16))
+                hexadecimalUUID(byteCount: 8)
             }
         )
+    }
+
+    /// Encodes UUID bytes directly, without intermediate formatted/replaced strings.
+    private static func hexadecimalUUID(byteCount: Int) -> String {
+        let uuid = UUID().uuid
+        return withUnsafeBytes(of: uuid) { bytes in
+            String(unsafeUninitializedCapacity: byteCount * 2) { output in
+                // Callers select 8 or 16 bytes from the UUID's 16-byte tuple;
+                // every byte of the returned UTF-8 buffer is initialized here.
+                for index in 0..<byteCount {
+                    let high = bytes[index] >> 4
+                    let low = bytes[index] & 0x0f
+                    output[index * 2] = high < 10 ? 48 + high : 87 + high
+                    output[index * 2 + 1] = low < 10 ? 48 + low : 87 + low
+                }
+                return byteCount * 2
+            }
+        }
     }
 
     private func filteredFinishedSpans(arguments: [String: Value]) -> [FinishedInMemorySpan] {

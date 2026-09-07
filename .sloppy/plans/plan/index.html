@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>plan</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="web/resource?path=assets/style.css">
+</head>
+<body>
+  <main class="plan-page">
+    <h2>Короткий вывод</h2>
+    <p>Переезд AdaMCP на CLI-рельсы может дать большой профит, <strong>если CLI станет стабильным “ядром автоматизации”</strong>, а MCP останется тонким транспортным/интеграционным слоем поверх него.</p>
+    <p>То есть не обязательно выбирать “MCP или консоль”. Лучший вариант, вероятно:</p>
+    <blockquote><strong>AdaCLI как canonical automation layer</strong></blockquote>
+    <blockquote><strong>AdaMCP как adapter/server, который вызывает тот же CLI / SDK</strong></blockquote>
+    <p>Так мы получаем воспроизводимость, локальный дебаг, CI/CD, автоскрипты, скиллы агентов и независимость от MCP-рантайма — не теряя возможность работать через MCP там, где это удобно.</p>
+    <hr>
+    <h1>Что именно дает переезд AdaMCP на CLI</h1>
+    <h2>1. Воспроизводимость и дебаг “как у обычного инженера”</h2>
+    <p>MCP-инструменты часто выглядят как “черный ящик”:</p>
+    <ul>
+<li>агент вызвал tool;</li>
+<li>что именно произошло — видно не всегда;</li>
+<li>повторить руками сложно;</li>
+<li>логи могут быть разрозненными;</li>
+<li>поведение зависит от MCP-клиента/агента/сессии.</li>
+</ul>
+    <p>CLI решает это:</p>
+    <pre><code class="language-bash">ada device list
+ada app install --device pixel-7 ./build.apk
+ada web open --url https://example.com
+ada test run --suite smoke
+ada logs tail --device pixel-7</code></pre>
+    <p>Любую операцию можно:</p>
+    <ul>
+<li>скопировать из лога;</li>
+<li>запустить руками;</li>
+<li>положить в README;</li>
+<li>запустить в CI;</li>
+<li>завернуть в bash/python/node script;</li>
+<li>сравнить до/после;</li>
+<li>воспроизвести вне агента.</li>
+</ul>
+    <p>Это очень сильное свойство.</p>
+    <hr>
+    <h2>2. CLI можно использовать без агента и без MCP</h2>
+    <p>Если вся логика живет только в MCP server, то она полезна в основном агенту.</p>
+    <p>Если логика живет в CLI, она полезна:</p>
+    <ul>
+<li>людям;</li>
+<li>агентам;</li>
+<li>CI;</li>
+<li>локальным dev scripts;</li>
+<li>GitHub Actions;</li>
+<li>Docker/remote environments;</li>
+<li>IDE tasks;</li>
+<li>cron jobs;</li>
+<li>тестовым пайплайнам;</li>
+<li>smoke/regression automation.</li>
+</ul>
+    <p>То есть CLI превращает AdaMCP из “набора tools для агента” в <strong>полноценную automation platform</strong>.</p>
+    <hr>
+    <h2>3. MCP становится не источником правды, а адаптером</h2>
+    <p>Архитектура может быть такой:</p>
+    <pre><code class="language-text"><span class="plan-code-line">                 ┌────────────┐</span><span class="plan-code-line">                 │ Human user │</span><span class="plan-code-line">                 └─────┬──────┘</span><span class="plan-code-line">                       │</span><span class="plan-code-line">                       ▼</span><span class="plan-code-line">                    Ada CLI</span><span class="plan-code-line">                       │</span><span class="plan-code-line">        ┌──────────────┼──────────────┐</span><span class="plan-code-line">        ▼              ▼              ▼</span><span class="plan-code-line">   Device layer    Browser layer    App layer</span><span class="plan-code-line">        ▲              ▲              ▲</span><span class="plan-code-line">        └──────────────┼──────────────┘</span><span class="plan-code-line">                       │</span><span class="plan-code-line">                    Ada SDK/Core</span><span class="plan-code-line">                       ▲</span><span class="plan-code-line">                       │</span><span class="plan-code-line">                 Ada MCP Server</span><span class="plan-code-line">                       ▲</span><span class="plan-code-line">                       │</span><span class="plan-code-line">                   AI Agent</span></code></pre>
+    <p>Или еще проще:</p>
+    <pre><code class="language-text"><span class="plan-code-line">AI Agent -&gt; MCP tool -&gt; Ada CLI command -&gt; Ada Core</span><span class="plan-code-line">Human    -&gt; terminal -&gt; Ada CLI command -&gt; Ada Core</span><span class="plan-code-line">CI       -&gt; script   -&gt; Ada CLI command -&gt; Ada Core</span></code></pre>
+    <p>Профит: один и тот же backend действий, разные интерфейсы.</p>
+    <hr>
+    <h1>По твоим пунктам</h1>
+    <h2>“Агент будет дегать tooling тогда, когда будет запущен проект”</h2>
+    <p>Да, это важный плюс.</p>
+    <p>Если CLI поставляется вместе с проектом или workspace, агент может сам обнаружить доступные команды:</p>
+    <pre><code class="language-bash">ada --help
+ada doctor
+ada capabilities
+ada devices
+ada project status</code></pre>
+    <p>Это дает агенту:</p>
+    <ul>
+<li>introspection;</li>
+<li>self-check;</li>
+<li>понятный список возможностей;</li>
+<li>диагностику окружения;</li>
+<li>меньше зависимости от заранее зарегистрированных MCP tools;</li>
+<li>возможность работать в новых проектах без ручной настройки MCP.</li>
+</ul>
+    <p>Особенно полезны команды:</p>
+    <pre><code class="language-bash">ada doctor
+ada capabilities --json
+ada config print
+ada env check
+ada targets list --json
+ada actions list --json</code></pre>
+    <p>Если CLI умеет отдавать machine-readable JSON, агент может сам понять, что доступно.</p>
+    <p>Например:</p>
+    <pre><code class="language-bash">ada capabilities --json</code></pre>
+    <pre><code class="language-json">{
+  "devices": {
+    "android": true,
+    "ios": false
+  },
+  "browser": {
+    "chromium": true,
+    "remoteDebugging": true
+  },
+  "appium": false,
+  "playwright": true,
+  "adb": true
+}</code></pre>
+    <p>Это лучше, чем надеяться, что MCP tool list всегда отражает реальное состояние среды.</p>
+    <hr>
+    <h2>“Агент сможет сделать себе скиллы и автоматизировать работу — но как нам это поможет?”</h2>
+    <p>Поможет, если CLI будет стабильным контрактом.</p>
+    <p>Скилл агента обычно должен отвечать на вопросы:</p>
+    <ul>
+<li>как собрать проект;</li>
+<li>как запустить;</li>
+<li>как проверить;</li>
+<li>как открыть приложение;</li>
+<li>как снять логи;</li>
+<li>как прогнать smoke test;</li>
+<li>как воспроизвести баг;</li>
+<li>как собрать артефакты.</li>
+</ul>
+    <p>Если есть CLI, скилл становится простым и надежным:</p>
+    <pre><code class="language-markdown"># Android Debug Skill
+
+Use:
+- `ada device list` to find connected devices
+- `ada app install --build latest`
+- `ada app launch --package com.example`
+- `ada logs tail --since 2m`
+- `ada screenshot take`
+- `ada test smoke`</code></pre>
+    <p>Без CLI скилл должен описывать MCP tools, их аргументы, ограничения конкретного клиента, нюансы runtime. Это менее переносимо.</p>
+    <h3>Конкретный профит для агента</h3>
+    <p>Агент сможет:</p>
+    <ol>
+<li>Проверять окружение:</li>
+</ol>
+    <pre><code class="language-bash">   ada doctor</code></pre>
+    <ol>
+<li>Сам выбирать target:</li>
+</ol>
+    <pre><code class="language-bash">   ada targets list --json</code></pre>
+    <ol>
+<li>Запускать стандартные workflow:</li>
+</ol>
+    <pre><code class="language-bash">   ada workflow run android-smoke</code></pre>
+    <ol>
+<li>Сохранять и переиспользовать команды:</li>
+</ol>
+    <pre><code class="language-bash">   ada recipe create reproduce-login-bug</code></pre>
+    <ol>
+<li>Автоматизировать повторяемые сценарии:</li>
+</ol>
+    <pre><code class="language-bash">   ada app reset
+   ada app launch
+   ada ui tap --text "Login"
+   ada ui type --field email --value test@example.com
+   ada logs collect --output artifacts/logs.zip</code></pre>
+    <ol>
+<li>Делиться этим с человеком:</li>
+</ol>
+    <blockquote>“Чтобы воспроизвести, выполни <code>ada workflow run repro-login-crash</code>”.</blockquote>
+    <p>Это превращает действия агента из эфемерных tool calls в <strong>артефакты процесса разработки</strong>.</p>
+    <hr>
+    <h2>“Но мы не сможем дебажить remote приложения на телефонах или web?”</h2>
+    <p>Не обязательно. Это зависит не от MCP vs CLI, а от backend capabilities.</p>
+    <p>CLI вполне может работать с remote/mobile/web, если внутри есть соответствующие адаптеры:</p>
+    <h3>Для Android</h3>
+    <p>CLI может использовать:</p>
+    <ul>
+<li><code>adb</code>;</li>
+<li>Appium;</li>
+<li>Maestro;</li>
+<li>Detox;</li>
+<li>uiautomator;</li>
+<li>scrcpy/minicap;</li>
+<li>remote device farm API;</li>
+<li>BrowserStack/Sauce Labs/Firebase Test Lab.</li>
+</ul>
+    <p>Примеры:</p>
+    <pre><code class="language-bash">ada device list
+ada android connect --adb tcpip://192.168.1.42:5555
+ada android logs tail
+ada android screenshot
+ada android shell input tap 100 200
+ada app install ./app.apk</code></pre>
+    <h3>Для iOS</h3>
+    <p>CLI может использовать:</p>
+    <ul>
+<li><code>xcrun simctl</code>;</li>
+<li>WebDriverAgent;</li>
+<li>Appium;</li>
+<li>XCUITest;</li>
+<li>physical device provider APIs.</li>
+</ul>
+    <p>Примеры:</p>
+    <pre><code class="language-bash">ada ios simulators list
+ada ios boot "iPhone 15"
+ada ios install ./App.app
+ada ios logs tail</code></pre>
+    <h3>Для web</h3>
+    <p>CLI может использовать:</p>
+    <ul>
+<li>Playwright;</li>
+<li>Chrome DevTools Protocol;</li>
+<li>Selenium;</li>
+<li>remote browser CDP endpoint;</li>
+<li>BrowserStack/Sauce;</li>
+<li>local Chrome debugging port.</li>
+</ul>
+    <p>Примеры:</p>
+    <pre><code class="language-bash">ada web open --url https://app.example.com
+ada web screenshot
+ada web console tail
+ada web eval 'window.location.href'
+ada web click --text "Login"
+ada web trace start</code></pre>
+    <h3>Для remote web/app</h3>
+    <p>CLI может принимать remote endpoint:</p>
+    <pre><code class="language-bash">ada web connect --cdp ws://remote-host:9222/devtools/browser/...
+ada android connect --adb remote-device:5555
+ada cloud device acquire --provider browserstack --os android --version 14</code></pre>
+    <p>То есть remote debug не теряется. Наоборот, CLI может сделать его более явным и повторяемым.</p>
+    <hr>
+    <h1>Где MCP реально хуже консоли</h1>
+    <h2>1. MCP плохо подходит как единственный интерфейс для сложной диагностики</h2>
+    <p>MCP tool call обычно атомарный:</p>
+    <pre><code class="language-text"><span class="plan-code-line">call tool X with args Y</span></code></pre>
+    <p>Но реальная диагностика часто интерактивная:</p>
+    <pre><code class="language-bash">adb devices
+adb shell pm list packages
+adb logcat | grep MyApp
+curl localhost:3000/health
+ps aux | grep chrome</code></pre>
+    <p>CLI/terminal лучше для exploratory debugging.</p>
+    <hr>
+    <h2>2. MCP зависит от клиента</h2>
+    <p>Один MCP client может хорошо отображать tool output, другой — плохо.</p>
+    <p>CLI output всегда можно увидеть, pipe-нуть, grep-нуть, сохранить:</p>
+    <pre><code class="language-bash">ada logs tail | grep ERROR
+ada test run --json &gt; result.json
+ada screenshot take --output fail.png</code></pre>
+    <hr>
+    <h2>3. MCP tools сложнее версионировать как публичный контракт</h2>
+    <p>CLI команды проще документировать и стабилизировать:</p>
+    <pre><code class="language-bash">ada app install
+ada app launch
+ada logs collect</code></pre>
+    <p>MCP schema может меняться, но пользователи чаще ожидают стабильности от CLI.</p>
+    <hr>
+    <h2>4. MCP сложнее использовать в CI</h2>
+    <p>Можно, но это неестественно.</p>
+    <p>CI хочет:</p>
+    <pre><code class="language-bash">npm run test
+ada workflow run smoke
+ada artifacts collect</code></pre>
+    <p>А не “подними MCP server, подключи client, вызови tool”.</p>
+    <hr>
+    <h1>Где MCP лучше CLI</h1>
+    <p>Важно не уйти в другую крайность.</p>
+    <p>MCP хорош для:</p>
+    <h2>1. Structured tool discovery</h2>
+    <p>Агенту удобно видеть tools как функции:</p>
+    <pre><code class="language-ts"><span class="plan-code-line">install_app(deviceId, apkPath)</span><span class="plan-code-line">take_screenshot(deviceId)</span><span class="plan-code-line">query_dom(selector)</span></code></pre>
+    <p>Это лучше, чем парсить help text.</p>
+    <p>Решение: CLI должен иметь JSON discovery:</p>
+    <pre><code class="language-bash">ada actions list --json
+ada schema print --json</code></pre>
+    <p>А MCP server может строить tools из этого schema.</p>
+    <hr>
+    <h2>2. Богатые typed inputs</h2>
+    <p>MCP tool schema может явно сказать:</p>
+    <pre><code class="language-json">{
+  "deviceId": "string",
+  "timeoutMs": "number",
+  "resetApp": "boolean"
+}</code></pre>
+    <p>CLI flags менее типизированы.</p>
+    <p>Решение: иметь общий schema/core, из которого генерируются и CLI, и MCP tools.</p>
+    <hr>
+    <h2>3. Resource exposure</h2>
+    <p>MCP может удобно отдавать ресурсы:</p>
+    <ul>
+<li>screenshots;</li>
+<li>logs;</li>
+<li>traces;</li>
+<li>DOM snapshots;</li>
+<li>device state;</li>
+<li>project metadata.</li>
+</ul>
+    <p>CLI тоже может, но через файлы/stdout.</p>
+    <p>Решение: CLI должен складывать artifacts в понятную директорию:</p>
+    <pre><code class="language-bash">ada artifacts list
+ada artifacts open latest
+ada logs collect --output artifacts/logs.zip</code></pre>
+    <hr>
+    <h2>4. Агенту не всегда удобно работать с interactive CLI</h2>
+    <p>Если CLI требует интерактивного ввода, прогресс-бары, TTY-only UI — агенту хуже.</p>
+    <p>Решение: все agent-facing команды должны иметь non-interactive режим:</p>
+    <pre><code class="language-bash">--json
+--yes
+--no-color
+--timeout
+--output
+--quiet</code></pre>
+    <hr>
+    <h1>Рекомендуемая стратегия</h1>
+    <h2>Не “заменить MCP на CLI”, а “вынести ядро в CLI/Core”</h2>
+    <p>Лучший путь:</p>
+    <pre><code class="language-text"><span class="plan-code-line">Ada Core / SDK</span><span class="plan-code-line">  ├─ Ada CLI</span><span class="plan-code-line">  └─ Ada MCP Server</span></code></pre>
+    <p>Где:</p>
+    <ul>
+<li>Core содержит реальные действия;</li>
+<li>CLI — основной человеко/CI/агентный интерфейс;</li>
+<li>MCP — thin adapter для AI-native клиентов;</li>
+<li>оба используют один и тот же schema/actions registry.</li>
+</ul>
+    <hr>
+    <h1>Что должно быть в AdaCLI, чтобы это было полезно агентам</h1>
+    <h2>1. Stable command surface</h2>
+    <p>Пример верхнего уровня:</p>
+    <pre><code class="language-bash">ada doctor
+ada capabilities
+ada project status
+
+ada device list
+ada device connect
+ada device info
+
+ada app build
+ada app install
+ada app launch
+ada app reset
+ada app uninstall
+
+ada web open
+ada web click
+ada web type
+ada web screenshot
+ada web console
+ada web trace
+
+ada mobile tap
+ada mobile type
+ada mobile screenshot
+ada mobile logs
+
+ada test run
+ada workflow run
+ada artifacts collect</code></pre>
+    <hr>
+    <h2>2. JSON mode для каждой команды</h2>
+    <p>Каждая команда должна иметь:</p>
+    <pre><code class="language-bash">--json</code></pre>
+    <p>Например:</p>
+    <pre><code class="language-bash">ada device list --json</code></pre>
+    <pre><code class="language-json">{
+  "devices": [
+    {
+      "id": "emulator-5554",
+      "platform": "android",
+      "status": "online",
+      "name": "Pixel_7_API_34"
+    }
+  ]
+}</code></pre>
+    <hr>
+    <h2>3. Exit codes как контракт</h2>
+    <p>Например:</p>
+    <pre><code class="language-text"><span class="plan-code-line">0   success</span><span class="plan-code-line">1   generic failure</span><span class="plan-code-line">2   invalid args</span><span class="plan-code-line">3   missing dependency</span><span class="plan-code-line">4   no device</span><span class="plan-code-line">5   timeout</span><span class="plan-code-line">6   app not found</span><span class="plan-code-line">7   assertion failed</span></code></pre>
+    <p>Агенту и CI это очень помогает.</p>
+    <hr>
+    <h2>4. Artifacts directory</h2>
+    <p>Все побочные результаты должны попадать в predictable place:</p>
+    <pre><code class="language-text"><span class="plan-code-line plan-code-path">.ada/</span><span class="plan-code-line plan-code-path">  artifacts/</span><span class="plan-code-line">    2025-...</span><span class="plan-code-line plan-code-file">      screenshot.png</span><span class="plan-code-line plan-code-file">      logs.txt</span><span class="plan-code-line plan-code-file">      trace.zip</span><span class="plan-code-line plan-code-file">      result.json</span></code></pre>
+    <p>Команды:</p>
+    <pre><code class="language-bash">ada artifacts list
+ada artifacts latest
+ada artifacts collect</code></pre>
+    <hr>
+    <h2>5. <code>ada doctor</code></h2>
+    <p>Обязательная команда.</p>
+    <p>Она должна проверять:</p>
+    <ul>
+<li>установлен ли adb;</li>
+<li>видны ли устройства;</li>
+<li>доступен ли Chrome/CDP;</li>
+<li>установлен ли Playwright;</li>
+<li>есть ли нужные env vars;</li>
+<li>доступен ли remote provider;</li>
+<li>есть ли project config;</li>
+<li>какие capabilities включены/выключены.</li>
+</ul>
+    <hr>
+    <h2>6. <code>ada capabilities --json</code></h2>
+    <p>Это особенно важно для агента.</p>
+    <p>Команда должна отвечать не “что теоретически умеет Ada”, а “что сейчас реально доступно”.</p>
+    <hr>
+    <h2>7. <code>ada workflow</code></h2>
+    <p>Поверх низкоуровневых команд нужны workflow:</p>
+    <pre><code class="language-bash">ada workflow run smoke
+ada workflow run reproduce-login-bug
+ada workflow run collect-debug-bundle</code></pre>
+    <p>Это место, где агент может создавать/предлагать автоматизацию.</p>
+    <hr>
+    <h1>Как агентские скиллы могут использовать CLI</h1>
+    <p>Скилл не должен быть “магией”. Он должен быть тонкой инструкцией поверх CLI.</p>
+    <p>Например:</p>
+    <pre><code class="language-markdown">## Debug Android crash
+
+1. Run `ada doctor --json`.
+2. Run `ada device list --json`.
+3. Install latest build with `ada app install --build latest`.
+4. Launch with `ada app launch`.
+5. Tail logs with `ada logs tail --since 2m`.
+6. If crash occurs, run `ada artifacts collect --include logs,screenshot,trace`.</code></pre>
+    <p>Польза:</p>
+    <ul>
+<li>скилл переносим между агентами;</li>
+<li>человек может повторить;</li>
+<li>CI может использовать те же команды;</li>
+<li>агент может улучшать workflow постепенно.</li>
+</ul>
+    <hr>
+    <h1>Главные риски CLI-переезда</h1>
+    <h2>Риск 1. CLI станет просто “тонкой оберткой над MCP”</h2>
+    <p>Это плохой вариант.</p>
+    <p>Если CLI вызывает MCP server, то мы не избавились от зависимости. Лучше наоборот:</p>
+    <pre><code class="language-text"><span class="plan-code-line">MCP calls CLI/Core</span></code></pre>
+    <p>или:</p>
+    <pre><code class="language-text"><span class="plan-code-line">CLI and MCP both call Ada Core</span></code></pre>
+    <hr>
+    <h2>Риск 2. CLI будет human-friendly, но agent-hostile</h2>
+    <p>Например:</p>
+    <ul>
+<li>цветной вывод без <code>--no-color</code>;</li>
+<li>progress bars;</li>
+<li>prompts;</li>
+<li>нестабильный текст;</li>
+<li>отсутствие JSON;</li>
+<li>отсутствие exit codes;</li>
+<li>команды зависят от current directory без явного config.</li>
+</ul>
+    <p>Нужно сразу проектировать CLI как automation-first.</p>
+    <hr>
+    <h2>Риск 3. Дублирование логики между MCP и CLI</h2>
+    <p>Если actions будут реализованы дважды, все быстро разъедется.</p>
+    <p>Нужен общий action registry/core.</p>
+    <hr>
+    <h2>Риск 4. Потеря typed schema</h2>
+    <p>MCP schema полезен. Не надо его выбрасывать.</p>
+    <p>Лучше хранить schema на уровне core:</p>
+    <pre><code class="language-text"><span class="plan-code-line plan-code-path">actions/install_app.schema.json</span><span class="plan-code-line plan-code-path">actions/take_screenshot.schema.json</span><span class="plan-code-line plan-code-path">actions/open_web.schema.json</span></code></pre>
+    <p>И из него генерировать:</p>
+    <ul>
+<li>CLI flags/help;</li>
+<li>MCP tool schemas;</li>
+<li>docs;</li>
+<li>tests.</li>
+</ul>
+    <hr>
+    <h1>Возможная целевая архитектура</h1>
+    <pre><code class="language-text"><span class="plan-code-line plan-code-path">packages/</span><span class="plan-code-line plan-code-path">  ada-core/</span><span class="plan-code-line plan-code-path">    actions/</span><span class="plan-code-line plan-code-file">      device.list</span><span class="plan-code-line plan-code-file">      app.install</span><span class="plan-code-line plan-code-file">      app.launch</span><span class="plan-code-line plan-code-file">      web.open</span><span class="plan-code-line plan-code-file">      web.screenshot</span><span class="plan-code-line plan-code-path">    schemas/</span><span class="plan-code-line plan-code-path">    providers/</span><span class="plan-code-line plan-code-path">      android-adb/</span><span class="plan-code-line plan-code-path">      ios-simctl/</span><span class="plan-code-line plan-code-path">      playwright/</span><span class="plan-code-line plan-code-path">      cdp/</span><span class="plan-code-line plan-code-path">      appium/</span><span class="plan-code-line plan-code-path">      browserstack/</span><span class="plan-code-line plan-code-muted"></span><span class="plan-code-line plan-code-path">  ada-cli/</span><span class="plan-code-line plan-code-path">    bin/ada</span><span class="plan-code-line plan-code-path">    commands/</span><span class="plan-code-line plan-code-path">    output/</span><span class="plan-code-line">      json</span><span class="plan-code-line">      human</span><span class="plan-code-line plan-code-muted"></span><span class="plan-code-line plan-code-path">  ada-mcp/</span><span class="plan-code-line">    server</span><span class="plan-code-line">    tool-registry</span><span class="plan-code-line">    adapters-to-core</span><span class="plan-code-line plan-code-muted"></span><span class="plan-code-line plan-code-path">  ada-workflows/</span><span class="plan-code-line plan-code-file">    smoke.yaml</span><span class="plan-code-line plan-code-file">    collect-debug.yaml</span></code></pre>
+    <hr>
+    <h1>Приоритетный план миграции</h1>
+    <h2>Phase 1. Inventory текущего AdaMCP</h2>
+    <p>Собрать список всех MCP tools:</p>
+    <ul>
+<li>имя tool;</li>
+<li>входные аргументы;</li>
+<li>выходной формат;</li>
+<li>side effects;</li>
+<li>зависимости;</li>
+<li>какие remote/mobile/web scenarios покрывает;</li>
+<li>какие tools критичны;</li>
+<li>какие experimental.</li>
+</ul>
+    <p>Результат:</p>
+    <pre><code class="language-text"><span class="plan-code-line">MCP Tool Inventory</span></code></pre>
+    <hr>
+    <h2>Phase 2. Спроектировать Action Registry</h2>
+    <p>Для каждого действия описать canonical action:</p>
+    <pre><code class="language-yaml">id: app.install
+description: Install app on target device
+input:
+  deviceId: string
+  artifactPath: string
+output:
+  installed: boolean
+  packageName: string
+errors:
+  - NO_DEVICE
+  - INSTALL_FAILED
+  - TIMEOUT</code></pre>
+    <p>Это станет источником правды для CLI и MCP.</p>
+    <hr>
+    <h2>Phase 3. Сделать минимальный AdaCLI</h2>
+    <p>Начать не со всего, а с самого ценного:</p>
+    <pre><code class="language-bash">ada doctor
+ada capabilities --json
+ada device list --json
+ada app install
+ada app launch
+ada logs tail
+ada screenshot take
+ada artifacts collect</code></pre>
+    <p>Это уже даст 80% пользы.</p>
+    <hr>
+    <h2>Phase 4. Подключить MCP к тому же core</h2>
+    <p>MCP tools должны стать thin wrappers:</p>
+    <pre><code class="language-text"><span class="plan-code-line">MCP install_app -&gt; core action app.install</span><span class="plan-code-line">CLI ada app install -&gt; core action app.install</span></code></pre>
+    <hr>
+    <h2>Phase 5. Добавить workflows</h2>
+    <p>Например:</p>
+    <pre><code class="language-bash">ada workflow run mobile-smoke
+ada workflow run web-smoke
+ada workflow run collect-debug-bundle</code></pre>
+    <hr>
+    <h2>Phase 6. Agent skill layer</h2>
+    <p>Сделать набор скиллов/гайдов:</p>
+    <ul>
+<li>Android debug skill;</li>
+<li>Web debug skill;</li>
+<li>Release smoke skill;</li>
+<li>Remote device skill;</li>
+<li>Bug reproduction skill.</li>
+</ul>
+    <p>Все они должны ссылаться на CLI commands.</p>
+    <hr>
+    <h1>Что я бы считал Definition of Done для такого переезда</h1>
+    <p>Минимально успешный результат:</p>
+    <ol>
+<li>Все критичные AdaMCP actions имеют CLI-эквивалент.</li>
+<li>CLI команды работают без интерактивного ввода.</li>
+<li>У каждой команды есть <code>--json</code>.</li>
+<li>Есть <code>ada doctor</code>.</li>
+<li>Есть <code>ada capabilities --json</code>.</li>
+<li>MCP server использует тот же core/action registry, что и CLI.</li>
+<li>Можно выполнить один mobile smoke scenario полностью из CLI.</li>
+<li>Можно выполнить один web debug scenario полностью из CLI.</li>
+<li>Агент может по <code>ada capabilities --json</code> понять, какие действия доступны.</li>
+<li>Человек может повторить действия агента командой из лога.</li>
+</ol>
+    <hr>
+    <h1>Ответ на главный вопрос</h1>
+    <h2>Какой профит мы получим?</h2>
+    <p>Главный профит:</p>
+    <ol>
+<li><strong>Воспроизводимость</strong> — действия агента можно повторить руками.</li>
+<li><strong>CI-ready автоматизация</strong> — те же команды можно запускать в пайплайнах.</li>
+<li><strong>Меньше lock-in в MCP</strong> — MCP становится адаптером, не ядром.</li>
+<li><strong>Проще дебажить</strong> — terminal-first troubleshooting.</li>
+<li><strong>Лучше agent skills</strong> — скиллы становятся инструкциями поверх стабильного CLI.</li>
+<li><strong>Единый контракт для людей и агентов</strong> — одна команда работает везде.</li>
+<li><strong>Можно сохранить remote/mobile/web debugging</strong> — если backend capabilities остаются в core.</li>
+<li><strong>Проще развивать workflows</strong> — <code>ada workflow run ...</code>.</li>
+<li><strong>Лучше логирование и artifacts</strong> — screenshots/logs/traces становятся файлами.</li>
+<li><strong>Проще onboarding</strong> — “поставь CLI и выполни <code>ada doctor</code>”.</li>
+</ol>
+    <hr>
+    <h1>Моя рекомендация</h1>
+    <p>Я бы не формулировал это как “MCP хуже, переезжаем на CLI”.</p>
+    <p>Лучше так:</p>
+    <blockquote>AdaMCP нужно превратить из самостоятельного слоя логики в MCP-адаптер поверх Ada Core.</blockquote>
+    <blockquote>Главным публичным и воспроизводимым интерфейсом сделать AdaCLI.</blockquote>
+    <blockquote>MCP оставить для AI-native интеграции, discovery и typed tool calls.</blockquote>
+    <p>Так мы получим преимущества консоли, но не потеряем преимущества MCP.</p>
+  </main>
+</body>
+</html>

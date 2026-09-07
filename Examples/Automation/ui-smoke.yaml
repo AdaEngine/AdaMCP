@@ -1,0 +1,10 @@
+# Replace windowId using ui.list_windows and id using ui.get_tree.
+- tapOn:
+    windowId: 123
+    id: AdaEditor.SceneViewport.Control.Play
+- wait:
+    milliseconds: 250
+- getMetrics: {}
+- getLogs:
+    after: 0
+    limit: 50

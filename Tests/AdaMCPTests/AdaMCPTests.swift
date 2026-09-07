@@ -1,5 +1,5 @@
 @_spi(Internal) import AdaEngine
-import AdaMCPCore
+@testable import AdaMCPCore
 import AdaMCPServer
 import Foundation
 import InMemoryTracing
@@ -738,6 +738,57 @@ struct AdaMCPTests {
         #expect(missingSelectorResult.isError == true)
         let missingSelectorPayload = try self.decodeToolPayload(missingSelectorResult)
         #expect(missingSelectorPayload.objectValue?["code"]?.stringValue == "invalid_arguments")
+    }
+
+    @Test("Automation clicks AdaUI by accessibility identifier and stops at ambiguous selectors")
+    func automationClicksAdaUI() async throws {
+        let fixture = self.makeUIFixture()
+        let source = """
+        - scrollTo:
+            windowId: \(fixture.window.id.id)
+            id: button.tap
+        - tapOn:
+            windowId: \(fixture.window.id.id)
+            id: button.tap
+        - tapOn:
+            windowId: \(fixture.window.id.id)
+            id: duplicate.node
+        - tapOn:
+            windowId: \(fixture.window.id.id)
+            id: button.tap
+        """
+        let result = await fixture.runtime.callTool(name: "automation.run", arguments: ["source": .string(source)])
+        #expect(result.isError == true)
+        let payload = try self.decodeToolPayload(result)
+        #expect(payload.objectValue?["failedStep"]?.intValue == 2)
+        #expect(fixture.recorder.tapCount == 1)
+    }
+
+    @Test("Automation input is delivered to the selected world's normal input parser")
+    func automationDeliversInput() async throws {
+        let fixture = self.makeUIFixture()
+        let app = fixture.runtime.appWorlds
+        InputPlugin().setup(in: app)
+        let result = await fixture.runtime.callTool(name: "automation.run", arguments: ["steps": [
+            ["keyEvent": ["world": "Main", "windowId": .int(fixture.window.id.id), "key": "space", "status": "down"]],
+            ["scrollEvent": ["world": "Main", "windowId": .int(fixture.window.id.id), "x": 10, "y": 20,
+                             "deltaX": 0, "deltaY": -15, "phase": "changed"]],
+            ["pinchEvent": ["world": "Main", "windowId": .int(fixture.window.id.id), "x": 10, "y": 20,
+                            "scale": 1.5, "phase": "changed"]]
+        ]])
+        #expect(result.isError != true, "\(result)")
+        await app.main.runScheduler(.preUpdate)
+        let input = try #require(app.main.getResource(Input.self))
+        #expect(input.isKeyPressed(.space))
+        #expect(input.getInputEvents().compactMap { $0 as? MouseEvent }.first?.scrollDelta.y == -15)
+        #expect(input.getInputEvents().compactMap { $0 as? PinchEvent }.first?.scale == 1.5)
+        let release = await fixture.runtime.callTool(name: "automation.run", arguments: ["steps": [
+            ["keyEvent": ["world": "Main", "windowId": .int(fixture.window.id.id), "key": "space", "status": "up"]]
+        ]])
+        #expect(release.isError != true)
+        await app.main.runScheduler(.postUpdate)
+        await app.main.runScheduler(.preUpdate)
+        #expect(app.main.getResource(Input.self)?.isKeyPressed(.space) == false)
     }
 
     private func makeFixture(traceRecorder: AdaMCPTraceRecorder? = nil) -> (runtime: AdaMCPRuntime, player: Entity) {

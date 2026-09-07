@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "AdaMCPPlugin", targets: ["AdaMCPPlugin"])
     ],
     dependencies: [
+        .package(url: "https://github.com/SpectralDragon/Yams.git", revision: "fb676da"),
         .package(url: "https://github.com/AdaEngine/AdaEngine", branch: "main"),
         .package(url: "https://github.com/apple/swift-distributed-tracing", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.0.0"),
@@ -32,6 +33,7 @@ let package = Package(
         .target(
             name: "AdaMCPCore",
             dependencies: [
+                .product(name: "Yams", package: "Yams"),
                 .product(name: "AdaEngine", package: "AdaEngine"),
                 .product(name: "InMemoryTracing", package: "swift-distributed-tracing"),
                 .product(name: "Tracing", package: "swift-distributed-tracing"),

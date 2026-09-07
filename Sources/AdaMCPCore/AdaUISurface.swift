@@ -156,7 +156,7 @@ struct AdaUIInspectionService {
             .sorted { $0.id.id < $1.id.id }
     }
 
-    private func resolveWindow(windowID: Int?) throws -> UIWindow {
+    func resolveWindow(windowID: Int?) throws -> UIWindow {
         let windows = self.allWindows()
         guard !windows.isEmpty else {
             throw AdaMCPError.uiUnavailable
