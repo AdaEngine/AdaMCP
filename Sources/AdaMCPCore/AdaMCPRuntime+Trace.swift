@@ -2,6 +2,17 @@ import Foundation
 import MCP
 
 extension AdaMCPRuntime {
+    func traceSetEnabledPayload(arguments: [String: Value]) throws -> Value {
+        guard let traceRecorder else {
+            throw AdaMCPError.tracingUnavailable
+        }
+        guard let enabled = arguments["enabled"]?.boolValue else {
+            throw AdaMCPError.invalidArguments("enabled must be a boolean.")
+        }
+        traceRecorder.tracer.setContinuousRecordingEnabled(enabled)
+        return traceRecorder.statusPayload()
+    }
+
     func traceSpansPayload(arguments: [String: Value]) throws -> Value {
         guard let traceRecorder else {
             throw AdaMCPError.tracingUnavailable

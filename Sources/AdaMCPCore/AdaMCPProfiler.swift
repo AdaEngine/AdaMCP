@@ -8,13 +8,14 @@ import Darwin
 /// Coordinates bounded AdaEngine profiling captures on top of the AdaMCP trace recorder.
 @MainActor
 public final class AdaMCPProfiler {
-    private struct ActiveCapture {
+    private struct ActiveCapture: Sendable {
         let id: String
         let preset: String
         let startedAt: Date
         let durationMilliseconds: Int?
         let frameCount: Int?
         let frameBudgetMilliseconds: Double
+        let fileURL: URL
     }
 
     private let traceRecorder: AdaMCPTraceRecorder?
@@ -22,15 +23,28 @@ public final class AdaMCPProfiler {
     private var captures: [String: Value] = [:]
     private var captureOrder: [String] = []
     private var peakResidentBytes: UInt64 = 0
+    private var liveLease: AdaMCPTraceLease?
+    private var liveLeaseTask: Task<Void, Never>?
+    private var captureRefreshTask: Task<Void, Never>?
+    private let liveLeaseDuration: Duration
 
-    public init(traceRecorder: AdaMCPTraceRecorder?) {
+    public init(traceRecorder: AdaMCPTraceRecorder?, liveLeaseDuration: Duration = .seconds(3)) {
         self.traceRecorder = traceRecorder
+        self.liveLeaseDuration = max(.milliseconds(1), liveLeaseDuration)
+    }
+
+    deinit {
+        liveLeaseTask?.cancel()
+        captureRefreshTask?.cancel()
+        if let activeCapture {
+            _ = try? traceRecorder?.tracer.discardFileSession(expectedURL: activeCapture.fileURL)
+        }
     }
 
     public func capabilitiesPayload() -> Value {
         .object([
             "platform": .string(Self.platformName),
-            "recording": .bool(traceRecorder?.isInstalledAsGlobalTracer == true),
+            "recording": .bool(traceRecorder?.isInstalledAsGlobalTracer == true && traceRecorder?.tracer.isAutomaticRecordingEnabled == true),
             "presets": .array([
                 .object([
                     "name": .string("frame"),
@@ -58,11 +72,13 @@ public final class AdaMCPProfiler {
 
     public func liveSnapshotPayload(limit: Int = 120, frameBudgetMilliseconds: Double = 16.67) throws -> Value {
         try refreshCaptureIfNeeded()
+        renewLiveRecordingLease()
         let spans = traceRecorder?.tracer.finishedSpans.suffix(max(1, limit * 32)).map(AdaMCPTraceRecorder.spanValue) ?? []
         let residentBytes = Self.currentResidentBytes()
         peakResidentBytes = max(peakResidentBytes, residentBytes)
 
         return .object([
+            "recording": .bool(traceRecorder?.isInstalledAsGlobalTracer == true && traceRecorder?.tracer.isAutomaticRecordingEnabled == true),
             "timestamp": .string(Self.dateFormatter.string(from: Date())),
             "activeCapture": activeCapture.map(activeCaptureValue) ?? .null,
             "memory": .object([
@@ -100,16 +116,19 @@ public final class AdaMCPProfiler {
             throw AdaMCPError.invalidArguments("frameCount must be greater than zero.")
         }
 
+        let startedAt = Date()
+        let fileURL = try traceRecorder.tracer.startFileSession()
         let capture = ActiveCapture(
             id: UUID().uuidString.lowercased(),
             preset: preset,
-            startedAt: Date(),
+            startedAt: startedAt,
             durationMilliseconds: requestedDuration ?? (requestedFrameCount == nil ? 5_000 : nil),
             frameCount: requestedFrameCount,
-            frameBudgetMilliseconds: max(arguments["frameBudgetMs"]?.doubleValue ?? 16.67, 0.1)
+            frameBudgetMilliseconds: max(arguments["frameBudgetMs"]?.doubleValue ?? 16.67, 0.1),
+            fileURL: fileURL
         )
-        _ = try traceRecorder.tracer.startFileSession()
         activeCapture = capture
+        monitorCapture(id: capture.id)
         return activeCaptureValue(capture)
     }
 
@@ -146,15 +165,15 @@ public final class AdaMCPProfiler {
 
     private func refreshCaptureIfNeeded() throws {
         guard let activeCapture else { return }
+        guard traceRecorder?.tracer.fileSessionURL == activeCapture.fileURL else {
+            throw AdaMCPError.invalidArguments("The profiler's trace file session was stopped or replaced.")
+        }
         let elapsedMilliseconds = Int(Date().timeIntervalSince(activeCapture.startedAt) * 1_000)
         let reachedDuration = activeCapture.durationMilliseconds.map { elapsedMilliseconds >= $0 } == true
         let reachedFrameCount: Bool
         if let requestedFrames = activeCapture.frameCount, let traceRecorder {
-            reachedFrameCount = traceRecorder.tracer.finishedSpans.lazy.filter {
-                $0.startInstant.nanosecondsSinceEpoch >= UInt64(activeCapture.startedAt.timeIntervalSince1970 * 1_000_000_000)
-                    && $0.operationName == "AppWorlds.update"
-                    && $0.parentSpanID == nil
-            }.count >= requestedFrames
+            // The bounded memory ring may wrap many times during a capture.
+            reachedFrameCount = traceRecorder.tracer.fileSessionFrameCount >= requestedFrames
         } else {
             reachedFrameCount = false
         }
@@ -163,12 +182,58 @@ public final class AdaMCPProfiler {
         }
     }
 
+    private func renewLiveRecordingLease() {
+        if liveLease == nil { liveLease = traceRecorder?.tracer.acquireRecordingLease() }
+        liveLeaseTask?.cancel()
+        let duration = liveLeaseDuration
+        liveLeaseTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: duration)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+            self?.liveLease = nil
+            self?.liveLeaseTask = nil
+        }
+    }
+
+    private func monitorCapture(id: String) {
+        captureRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .milliseconds(100))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else {
+                    return
+                }
+                guard let self, self.activeCapture?.id == id else {
+                    return
+                }
+                do {
+                    try self.refreshCaptureIfNeeded()
+                } catch {
+                    self.activeCapture = nil
+                    self.captureRefreshTask = nil
+                    self.storeCapture(.object([
+                        "manifest": .object(["id": .string(id), "state": .string("failed"), "error": .string(String(describing: error))])
+                    ]), id: id)
+                    return
+                }
+            }
+        }
+    }
+
     private func finishCapture(_ activeCapture: ActiveCapture) throws -> Value {
         guard let traceRecorder else {
             throw AdaMCPError.tracingUnavailable
         }
         let endedAt = Date()
-        let spans = try traceRecorder.tracer.stopFileSession()
+        let spans = try traceRecorder.tracer.stopFileSession(expectedURL: activeCapture.fileURL)
         let summary = Self.summaryValue(spans: spans, frameBudgetMilliseconds: activeCapture.frameBudgetMilliseconds)
         let manifest: Value = .object([
             "id": .string(activeCapture.id),
@@ -190,8 +255,15 @@ public final class AdaMCPProfiler {
         ])
 
         self.activeCapture = nil
-        captures[activeCapture.id] = capture
-        captureOrder.append(activeCapture.id)
+        captureRefreshTask?.cancel()
+        captureRefreshTask = nil
+        storeCapture(capture, id: activeCapture.id)
+        return capture
+    }
+
+    private func storeCapture(_ capture: Value, id: String) {
+        captures[id] = capture
+        captureOrder.append(id)
         if captureOrder.count > 8 {
             let removalCount = captureOrder.count - 8
             let removed = Array(captureOrder.prefix(removalCount))
@@ -200,7 +272,6 @@ public final class AdaMCPProfiler {
                 captures[id] = nil
             }
         }
-        return capture
     }
 
     private func activeCaptureValue(_ capture: ActiveCapture) -> Value {

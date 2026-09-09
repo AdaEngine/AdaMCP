@@ -98,6 +98,12 @@ The command binds to `127.0.0.1`, discovers live targets through the same manife
 
 Agents can use `adamcp.profiler.status`, `adamcp.profiler.start`, `adamcp.profiler.stop`, `adamcp.profiler.get_report`, and `adamcp.profiler.export`. The embedded runtime also exposes the corresponding `profiler.*` tools and `ada://profiler/*` resources. Hangs, allocation stacks, symbolication, GPU counters, and Metal capture are reported as unsupported in this CPU-first increment; the dashboard does not synthesize those measurements.
 
+The default MCP plugin records automatic engine spans on demand. Opening Live mode enables recording while snapshots are requested; it returns to idle three seconds after the last request. File sessions and profiler captures keep recording independently. Duration/frame-count captures stop without requiring another client poll, and frame counts remain valid when the bounded memory ring wraps.
+
+For continuous history, call the runtime tool `trace.set_enabled` with `{"enabled": true}`; use `false` to return to recording on demand. This setting does not interrupt an active file session or Live consumer. `trace.status` reports the effective `recording` state and `continuousRecording` setting. Existing retained spans remain readable after recording stops. The first Live snapshot after idle may contain only earlier data until new frames complete.
+
+Standalone recorders retain continuous recording by default; callers can configure it explicitly with `AdaMCPTraceRecorder(configuration: .init(continuousRecording: true))`. Direct `AdaMCPTracer.startSpan` calls remain explicit low-level recording operations; the demand control applies to automatic engine spans through `AdaTrace`. Spans already started finish normally when automatic recording is disabled.
+
 ## AdaUI surface
 
 AdaUI support is intentionally inspection-first. The main flow is:

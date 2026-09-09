@@ -29,7 +29,7 @@ public struct MCPServerConfiguration: Sendable {
         instructions: String? = "Inspect live AdaEngine worlds, entities, resources, assets, and render captures.",
         registerTypes: (@MainActor (MCPIntrospectionRegistry) -> Void)? = nil,
         captureOverride: RenderCaptureService.CaptureOverride? = nil,
-        traceRecorder: AdaMCPTraceRecorder? = AdaMCPTraceRecorder(),
+        traceRecorder: AdaMCPTraceRecorder? = AdaMCPTraceRecorder(configuration: .init(continuousRecording: false)),
         enableDiscovery: Bool = true,
         discoveryMetadata: [String: String] = [:]
     ) {
@@ -340,6 +340,12 @@ public final class AdaMCPRuntime {
                 description: "Get AdaMCP tracing memory limits, captured span counts, and file session state.",
                 inputSchema: Self.objectSchema(),
                 annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+            ),
+            Tool(
+                name: "trace.set_enabled",
+                description: "Enable or disable continuous automatic engine tracing. File captures and active live profiler consumers continue recording independently.",
+                inputSchema: Self.objectSchema(properties: ["enabled": .object(["type": "boolean"])], required: ["enabled"]),
+                annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false)
             ),
             Tool(
                 name: "trace.start_file",
@@ -762,6 +768,8 @@ public final class AdaMCPRuntime {
                 payload = try self.traceClearPayload()
             case "trace.status":
                 payload = try self.traceStatusPayload()
+            case "trace.set_enabled":
+                payload = try self.traceSetEnabledPayload(arguments: arguments)
             case "trace.start_file":
                 payload = try self.traceStartFilePayload()
             case "trace.stop_file":

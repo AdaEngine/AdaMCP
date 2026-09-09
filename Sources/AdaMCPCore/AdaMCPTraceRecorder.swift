@@ -10,16 +10,53 @@ public struct AdaMCPTracer: Tracer, Sendable {
     public let maxFinishedSpanCount: Int
     public let temporaryDirectory: URL
 
-    private let state = State()
+    private let state: State
+    private let recordingControl: AdaMCPTraceControl
 
     public init(
         idGenerator: InMemoryTracer.IDGenerator = AdaMCPTraceRecorder.makeIDGenerator(),
         maxFinishedSpanCount: Int = 1_000,
-        temporaryDirectory: URL = FileManager.default.temporaryDirectory
+        temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+        continuousRecording: Bool = true
     ) {
         self.idGenerator = idGenerator
         self.maxFinishedSpanCount = max(0, maxFinishedSpanCount)
         self.temporaryDirectory = temporaryDirectory
+        let control = AdaMCPTraceControl(continuous: continuousRecording)
+        self.recordingControl = control
+        self.state = State(recordingControl: control)
+    }
+
+    /// Whether automatic AdaEngine spans are enabled by continuous mode or a consumer.
+    /// Explicit low-level startSpan calls remain available regardless of this setting.
+    public var isAutomaticRecordingEnabled: Bool { recordingControl.isEnabled }
+    public var isContinuousRecordingEnabled: Bool { recordingControl.isContinuous }
+
+    public func setContinuousRecordingEnabled(_ enabled: Bool) {
+        connectRecordingControlIfGlobal()
+        recordingControl.setContinuous(enabled)
+    }
+
+    public func acquireRecordingLease() -> AdaMCPTraceLease {
+        connectRecordingControlIfGlobal()
+        return recordingControl.acquireLease()
+    }
+
+    fileprivate func installRecordingControl() { recordingControl.install() }
+
+    fileprivate func sharesState(with other: Self) -> Bool { state === other.state }
+
+    fileprivate static func selectedGlobalTracer() -> Self? {
+        // SDK withSpan uses the first LegacyTracer; Tracer refines that protocol.
+        // A legacy-only provider ahead of AdaMCP must retain ownership as well.
+        InstrumentationSystem._findInstrument(where: { $0 is any LegacyTracer }) as? Self
+    }
+
+    private func connectRecordingControlIfGlobal() {
+        if let global = Self.selectedGlobalTracer(),
+           sharesState(with: global) {
+            recordingControl.install()
+        }
     }
 
     public func startSpan<Instant>(
@@ -126,20 +163,33 @@ public struct AdaMCPTracer: Tracer, Sendable {
         state.fileSessionURL
     }
 
+    public var fileSessionFrameCount: Int { state.fileSessionFrameCount }
+
     public func clearFinishedSpans() {
         state.clearFinishedSpans()
     }
 
     public func startFileSession() throws -> URL {
-        try state.startFileSession(temporaryDirectory: temporaryDirectory)
+        connectRecordingControlIfGlobal()
+        return try state.startFileSession(temporaryDirectory: temporaryDirectory)
     }
 
     public func stopFileSession() throws -> [Value] {
-        try state.stopFileSession(deleteFile: true)
+        connectRecordingControlIfGlobal()
+        return try state.stopFileSession(deleteFile: true)
+    }
+
+    func stopFileSession(expectedURL: URL) throws -> [Value] {
+        try state.stopFileSession(deleteFile: true, expectedURL: expectedURL)
     }
 
     public func discardFileSession() throws -> URL {
-        try state.discardFileSession()
+        connectRecordingControlIfGlobal()
+        return try state.discardFileSession()
+    }
+
+    func discardFileSession(expectedURL: URL) throws -> URL {
+        try state.discardFileSession(expectedURL: expectedURL)
     }
 
     private func finishSpan(_ span: FinishedInMemorySpan, identifiedBy spanContext: InMemorySpanContext) {
@@ -152,6 +202,8 @@ private extension AdaMCPTracer {
         private struct FileSession {
             let url: URL
             let handle: FileHandle
+            let startedAt = DefaultTracerClock.now.nanosecondsSinceEpoch
+            var frameCount = 0
         }
 
         private let lock = NSLock()
@@ -161,6 +213,9 @@ private extension AdaMCPTracer {
         private var finishedSpanStart = 0
         private var fileSession: FileSession?
         private var _droppedSpanCount = 0
+        private let recordingControl: AdaMCPTraceControl
+
+        init(recordingControl: AdaMCPTraceControl) { self.recordingControl = recordingControl }
 
         var finishedSpanCount: Int {
             lock.withLock { finishedSpanStorage.count }
@@ -181,6 +236,8 @@ private extension AdaMCPTracer {
         var fileSessionURL: URL? {
             lock.withLock { fileSession?.url }
         }
+
+        var fileSessionFrameCount: Int { lock.withLock { fileSession?.frameCount ?? 0 } }
 
         func insertActiveSpan(_ span: InMemorySpan, identifiedBy spanContext: InMemorySpanContext) {
             lock.withLock {
@@ -239,6 +296,11 @@ private extension AdaMCPTracer {
                     _droppedSpanCount += 1
                 }
 
+                if let session = fileSession,
+                   span.operationName == "AppWorlds.update", span.parentSpanID == nil,
+                   span.startInstant.nanosecondsSinceEpoch >= session.startedAt {
+                    fileSession?.frameCount += 1
+                }
                 if let fileSession {
                     self.append(span, to: fileSession.handle)
                 }
@@ -261,12 +323,13 @@ private extension AdaMCPTracer {
                 FileManager.default.createFile(atPath: url.path, contents: nil)
                 let handle = try FileHandle(forWritingTo: url)
                 fileSession = FileSession(url: url, handle: handle)
+                recordingControl.setFileActive(true)
                 return url
             }
         }
 
-        func stopFileSession(deleteFile: Bool) throws -> [Value] {
-            let session = try closeFileSession()
+        func stopFileSession(deleteFile: Bool, expectedURL: URL? = nil) throws -> [Value] {
+            let session = try closeFileSession(expectedURL: expectedURL)
             defer {
                 if deleteFile {
                     try? FileManager.default.removeItem(at: session.url)
@@ -277,18 +340,22 @@ private extension AdaMCPTracer {
             return try Self.decodeJSONLines(data)
         }
 
-        func discardFileSession() throws -> URL {
-            let session = try closeFileSession()
+        func discardFileSession(expectedURL: URL? = nil) throws -> URL {
+            let session = try closeFileSession(expectedURL: expectedURL)
             try? FileManager.default.removeItem(at: session.url)
             return session.url
         }
 
-        private func closeFileSession() throws -> FileSession {
+        private func closeFileSession(expectedURL: URL? = nil) throws -> FileSession {
             try lock.withLock {
                 guard let session = fileSession else {
                     throw AdaMCPError.traceFileSessionInactive
                 }
+                guard expectedURL == nil || expectedURL == session.url else {
+                    throw AdaMCPError.invalidArguments("The profiler's trace file session was replaced.")
+                }
                 fileSession = nil
+                recordingControl.setFileActive(false)
                 try session.handle.synchronize()
                 try session.handle.close()
                 return session
@@ -327,17 +394,20 @@ public struct AdaMCPTraceRecorder: Sendable {
         public let serviceName: String
         public let scopeName: String
         public let temporaryDirectory: URL
+        public let continuousRecording: Bool
 
         public init(
             maxFinishedSpanCount: Int = 1_000,
             serviceName: String = "adaengine",
             scopeName: String = "AdaEngine",
-            temporaryDirectory: URL = FileManager.default.temporaryDirectory
+            temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+            continuousRecording: Bool = true
         ) {
             self.maxFinishedSpanCount = maxFinishedSpanCount
             self.serviceName = serviceName
             self.scopeName = scopeName
             self.temporaryDirectory = temporaryDirectory
+            self.continuousRecording = continuousRecording
         }
     }
 
@@ -360,7 +430,8 @@ public struct AdaMCPTraceRecorder: Sendable {
             tracer: AdaMCPTracer(
                 idGenerator: AdaMCPTraceRecorder.makeIDGenerator(),
                 maxFinishedSpanCount: configuration.maxFinishedSpanCount,
-                temporaryDirectory: configuration.temporaryDirectory
+                temporaryDirectory: configuration.temporaryDirectory,
+                continuousRecording: configuration.continuousRecording
             ),
             configuration: configuration
         )
@@ -377,22 +448,26 @@ public struct AdaMCPTraceRecorder: Sendable {
                 maxFinishedSpanCount: tracer.maxFinishedSpanCount,
                 serviceName: serviceName,
                 scopeName: scopeName,
-                temporaryDirectory: tracer.temporaryDirectory
+                temporaryDirectory: tracer.temporaryDirectory,
+                continuousRecording: tracer.isContinuousRecordingEnabled
             )
         )
     }
 
     public static func activeGlobalRecorder() -> AdaMCPTraceRecorder? {
-        guard let tracer = InstrumentationSystem._findInstrument(where: { $0 is AdaMCPTracer }) as? AdaMCPTracer else {
+        // Follow the SDK's selected tracer, not an inactive tracing instrument
+        // later in a MultiplexInstrument. Its policy must not disable a foreign provider.
+        guard let tracer = AdaMCPTracer.selectedGlobalTracer() else {
             return nil
         }
+        tracer.installRecordingControl()
         return AdaMCPTraceRecorder(tracer: tracer)
     }
 
     @discardableResult
     public func installAsGlobalTracerIfPossible() -> Bool {
-        if Self.activeGlobalRecorder() != nil {
-            return true
+        if let active = Self.activeGlobalRecorder() {
+            return tracer.sharesState(with: active.tracer)
         }
 
         let instrumentName = String(reflecting: type(of: InstrumentationSystem.instrument))
@@ -401,11 +476,15 @@ public struct AdaMCPTraceRecorder: Sendable {
         }
 
         InstrumentationSystem.bootstrap(self.tracer)
+        tracer.installRecordingControl()
         return true
     }
 
     public var isInstalledAsGlobalTracer: Bool {
-        Self.activeGlobalRecorder() != nil
+        guard let active = Self.activeGlobalRecorder() else {
+            return false
+        }
+        return tracer.sharesState(with: active.tracer)
     }
 
     public var finishedSpanCount: Int {
@@ -436,7 +515,8 @@ public struct AdaMCPTraceRecorder: Sendable {
                 "active": .bool(tracer.isFileSessionActive),
                 "path": tracer.fileSessionURL.map { .string($0.path) } ?? .null
             ]),
-            "recording": .bool(self.isInstalledAsGlobalTracer)
+            "recording": .bool(self.isInstalledAsGlobalTracer && tracer.isAutomaticRecordingEnabled),
+            "continuousRecording": .bool(tracer.isContinuousRecordingEnabled)
         ])
     }
 
@@ -481,7 +561,7 @@ public struct AdaMCPTraceRecorder: Sendable {
                 "activeSpanCount": .int(tracer.activeSpanCount),
                 "droppedSpanCount": .int(tracer.droppedSpanCount),
                 "maxFinishedSpanCount": .int(tracer.maxFinishedSpanCount),
-                "recording": .bool(self.isInstalledAsGlobalTracer)
+                "recording": .bool(self.isInstalledAsGlobalTracer && tracer.isAutomaticRecordingEnabled)
             ]),
             "spans": .array(spanValues)
         ])
