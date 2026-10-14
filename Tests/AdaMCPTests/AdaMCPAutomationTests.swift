@@ -1,6 +1,7 @@
 import AdaEngine
 @testable import AdaMCPCore
 import Foundation
+import Logging
 import MCP
 import Testing
 
@@ -126,9 +127,11 @@ struct AdaMCPAutomationTests {
     @Test func logBufferHasIndependentCursorsAndReportsOverflow() {
         let store = RuntimeLogStore(capacity: 2)
         store.setEnabled(true)
-        let handler = RuntimeLogHandler(label: "test", store: store)
+        let logger = Logger(label: "test") { label in
+            RuntimeLogHandler(label: label, store: store)
+        }
         for index in 1...3 {
-            handler.log(level: .info, message: "log \(index)", metadata: nil, source: "test", file: #file, function: #function, line: #line)
+            logger.info("log \(index)")
         }
         let first = store.read(after: 0, limit: 1)
         #expect(first.dropped == 1)

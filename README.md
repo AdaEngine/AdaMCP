@@ -24,11 +24,12 @@ The important distinction is:
 
 ## Embedding in an AdaEngine app ⚒️
 
-Until the package is published, add it as a local SwiftPM dependency:
+Add the release as a SwiftPM dependency. The revision requirement allows the
+runtime to follow AdaEngine's `main` branch:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/AdaEngine/AdaMCP.git", branch: "main")
+    .package(url: "https://github.com/AdaEngine/AdaMCP.git", revision: "v0.2.0")
 ]
 ```
 
@@ -84,7 +85,7 @@ Useful overrides:
 - `ADAMCP_DISCOVERY_DIR` or `--discovery-dir` points at a custom manifest directory.
 - `ADAMCP_STDIO_COMMAND` or `--stdio-command` launches an AdaEngine app/server as a child stdio MCP process and proxies bytes transparently.
 
-When multiple live apps are found, use the router tools `adamcp.list_servers` and `adamcp.select_server`. Before publishing, make sure the npm registry target has the `adamcp` package name available; the local npm config used during development currently returns 404 for `npm view adamcp`.
+When multiple live apps are found, use the router tools `adamcp.list_servers` and `adamcp.select_server`.
 
 ## Local web profiler
 
