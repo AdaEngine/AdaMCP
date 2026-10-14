@@ -1,3 +1,4 @@
+import AdaUtils
 import Foundation
 import InMemoryTracing
 import MCP
@@ -9,6 +10,8 @@ public struct AdaMCPTracer: Tracer, Sendable {
     public let idGenerator: InMemoryTracer.IDGenerator
     public let maxFinishedSpanCount: Int
     public let temporaryDirectory: URL
+
+    let performance = AdaMCPPerformanceAccumulator()
 
     private let state: State
     private let recordingControl: AdaMCPTraceControl
@@ -97,6 +100,10 @@ public struct AdaMCPTracer: Tracer, Sendable {
         ) { finishedSpan in
             self.finishSpan(finishedSpan, identifiedBy: spanContext)
         }
+        if let target = AdaTrace.profileTargetID {
+            span.attributes["ada.profile.target_id"] = target
+            span.attributes["ada.profile.frame_root"] = AdaTrace.profileFrameRoot
+        }
         state.insertActiveSpan(span, identifiedBy: spanContext)
         return span
     }
@@ -164,6 +171,7 @@ public struct AdaMCPTracer: Tracer, Sendable {
     }
 
     public var fileSessionFrameCount: Int { state.fileSessionFrameCount }
+    func fileSessionFrameCount(targetID: String) -> Int { state.targetFrameCount(targetID) }
 
     public func clearFinishedSpans() {
         state.clearFinishedSpans()
@@ -193,6 +201,7 @@ public struct AdaMCPTracer: Tracer, Sendable {
     }
 
     private func finishSpan(_ span: FinishedInMemorySpan, identifiedBy spanContext: InMemorySpanContext) {
+        performance.record(span)
         state.finishSpan(span, identifiedBy: spanContext, maxFinishedSpanCount: maxFinishedSpanCount)
     }
 }
@@ -204,6 +213,8 @@ private extension AdaMCPTracer {
             let handle: FileHandle
             let startedAt = DefaultTracerClock.now.nanosecondsSinceEpoch
             var frameCount = 0
+            var targetFrameCounts: [String: Int] = [:]
+            var writeError: String?
         }
 
         private let lock = NSLock()
@@ -238,6 +249,7 @@ private extension AdaMCPTracer {
         }
 
         var fileSessionFrameCount: Int { lock.withLock { fileSession?.frameCount ?? 0 } }
+        func targetFrameCount(_ id: String) -> Int { lock.withLock { fileSession?.targetFrameCounts[id] ?? 0 } }
 
         func insertActiveSpan(_ span: InMemorySpan, identifiedBy spanContext: InMemorySpanContext) {
             lock.withLock {
@@ -301,6 +313,12 @@ private extension AdaMCPTracer {
                    span.startInstant.nanosecondsSinceEpoch >= session.startedAt {
                     fileSession?.frameCount += 1
                 }
+                if let session = fileSession, span.operationName == "AppWorlds.update",
+                   span.startInstant.nanosecondsSinceEpoch >= session.startedAt,
+                   case .string(let targetID) = span.attributes["ada.profile.target_id"]?.toSpanAttribute(),
+                   case .bool(true) = span.attributes["ada.profile.frame_root"]?.toSpanAttribute() {
+                    fileSession?.targetFrameCounts[targetID, default: 0] += 1
+                }
                 if let fileSession {
                     self.append(span, to: fileSession.handle)
                 }
@@ -336,6 +354,7 @@ private extension AdaMCPTracer {
                 }
             }
 
+            if let error = session.writeError { throw AdaMCPError.invalidArguments("Trace write failed: \(error)") }
             let data = try Data(contentsOf: session.url)
             return try Self.decodeJSONLines(data)
         }
@@ -369,7 +388,8 @@ private extension AdaMCPTracer {
                 data.append(0x0A)
                 try handle.write(contentsOf: data)
             } catch {
-                // File tracing is diagnostic-only; keep the live app running if a write fails.
+                // Preserve runtime execution, but report incomplete capture data to its consumer.
+                fileSession?.writeError = String(describing: error)
             }
         }
 

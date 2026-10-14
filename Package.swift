@@ -1,5 +1,14 @@
 // swift-tools-version: 6.2
+import Foundation
 import PackageDescription
+
+let adaEnginePathOverride = ProcessInfo.processInfo.environment["ADAENGINE_PACKAGE_PATH"]
+let adaEngineURL = URL(fileURLWithPath: adaEnginePathOverride ?? "../AdaEngine", relativeTo: URL(fileURLWithPath: #filePath).deletingLastPathComponent()).standardizedFileURL
+let hasLocalAdaEngine = FileManager.default.fileExists(atPath: adaEngineURL.appendingPathComponent("Package.swift").path)
+// Use the same checkout as AdaEditor during local development to avoid conflicting package identities.
+let adaEnginePackage: Package.Dependency = adaEnginePathOverride != nil || hasLocalAdaEngine
+    ? .package(path: adaEngineURL.path)
+    : .package(url: "https://github.com/AdaEngine/AdaEngine", branch: "main")
 
 let package = Package(
     name: "AdaMCP",
@@ -17,7 +26,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/SpectralDragon/Yams.git", revision: "fb676da"),
-        .package(url: "https://github.com/AdaEngine/AdaEngine", branch: "main"),
+        adaEnginePackage,
         .package(url: "https://github.com/apple/swift-distributed-tracing", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0")

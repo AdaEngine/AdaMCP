@@ -66,8 +66,11 @@ public struct MCPPlugin: Plugin {
             registry: state.registry,
             renderCaptureService: renderCaptureService,
             traceRecorder: state.traceRecorder,
+            additionalTools: configuration.additionalTools,
+            additionalToolHandler: configuration.additionalToolHandler,
             logger: state.logger
         )
+        app.insertResource(AdaMCPProfilerResource(profiler: runtime.profiler))
         if configuration.enableHTTP {
             let controller = AdaMCPHTTPServerController(configuration: configuration, runtime: runtime)
             state.httpController = controller

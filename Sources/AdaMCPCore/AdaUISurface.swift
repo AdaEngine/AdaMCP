@@ -205,7 +205,8 @@ struct AdaUIInspectionService {
                 frame: window.frame,
                 isActive: window.isActive,
                 overlayMode: containers.first?.uiInspectionOverlayMode ?? .off,
-                rootCount: roots.count
+                rootCount: roots.count,
+                layoutTraits: containers.first?.uiWindowSummary().layoutTraits
             ),
             roots: roots
         )

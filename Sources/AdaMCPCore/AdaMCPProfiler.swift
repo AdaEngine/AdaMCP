@@ -10,6 +10,8 @@ import Darwin
 public final class AdaMCPProfiler {
     private struct ActiveCapture: Sendable {
         let id: String
+        let targetID: String?
+        let targetLease: AdaMCPTraceLease?
         let preset: String
         let startedAt: Date
         let durationMilliseconds: Int?
@@ -17,6 +19,8 @@ public final class AdaMCPProfiler {
         let frameBudgetMilliseconds: Double
         let fileURL: URL
     }
+
+    public let performance: AdaMCPPerformanceMonitor
 
     private let traceRecorder: AdaMCPTraceRecorder?
     private var activeCapture: ActiveCapture?
@@ -29,6 +33,7 @@ public final class AdaMCPProfiler {
     private let liveLeaseDuration: Duration
 
     public init(traceRecorder: AdaMCPTraceRecorder?, liveLeaseDuration: Duration = .seconds(3)) {
+        self.performance = AdaMCPPerformanceMonitor(tracer: traceRecorder?.tracer)
         self.traceRecorder = traceRecorder
         self.liveLeaseDuration = max(.milliseconds(1), liveLeaseDuration)
     }
@@ -70,7 +75,8 @@ public final class AdaMCPProfiler {
         ])
     }
 
-    public func liveSnapshotPayload(limit: Int = 120, frameBudgetMilliseconds: Double = 16.67) throws -> Value {
+    public func liveSnapshotPayload(limit: Int = 120, frameBudgetMilliseconds: Double = 16.67, targetID: String? = nil) throws -> Value {
+        if let targetID { return try performance.snapshotPayload(targetID: targetID) }
         try refreshCaptureIfNeeded()
         renewLiveRecordingLease()
         let spans = traceRecorder?.tracer.finishedSpans.suffix(max(1, limit * 32)).map(AdaMCPTraceRecorder.spanValue) ?? []
@@ -116,10 +122,14 @@ public final class AdaMCPProfiler {
             throw AdaMCPError.invalidArguments("frameCount must be greater than zero.")
         }
 
+        let targetID = arguments["targetId"]?.stringValue
+        let targetLease = try targetID.map { try performance.subscribe(targetID: $0) }
         let startedAt = Date()
         let fileURL = try traceRecorder.tracer.startFileSession()
         let capture = ActiveCapture(
             id: UUID().uuidString.lowercased(),
+            targetID: targetID,
+            targetLease: targetLease,
             preset: preset,
             startedAt: startedAt,
             durationMilliseconds: requestedDuration ?? (requestedFrameCount == nil ? 5_000 : nil),
@@ -130,6 +140,12 @@ public final class AdaMCPProfiler {
         activeCapture = capture
         monitorCapture(id: capture.id)
         return activeCaptureValue(capture)
+    }
+
+    /// Complete any capture belonging to a game before releasing its live metrics.
+    public func stopTarget(_ targetID: String) throws {
+        defer { performance.stop(targetID) }
+        if let activeCapture, activeCapture.targetID == targetID { _ = try finishCapture(activeCapture) }
     }
 
     public func stopCapture(arguments: [String: Value]) throws -> Value {
@@ -173,7 +189,11 @@ public final class AdaMCPProfiler {
         let reachedFrameCount: Bool
         if let requestedFrames = activeCapture.frameCount, let traceRecorder {
             // The bounded memory ring may wrap many times during a capture.
-            reachedFrameCount = traceRecorder.tracer.fileSessionFrameCount >= requestedFrames
+            if let targetID = activeCapture.targetID {
+                reachedFrameCount = traceRecorder.tracer.fileSessionFrameCount(targetID: targetID) >= requestedFrames
+            } else {
+                reachedFrameCount = traceRecorder.tracer.fileSessionFrameCount >= requestedFrames
+            }
         } else {
             reachedFrameCount = false
         }
@@ -217,6 +237,7 @@ public final class AdaMCPProfiler {
                 do {
                     try self.refreshCaptureIfNeeded()
                 } catch {
+                    guard self.activeCapture != nil else { return }
                     self.activeCapture = nil
                     self.captureRefreshTask = nil
                     self.storeCapture(.object([
@@ -229,14 +250,33 @@ public final class AdaMCPProfiler {
     }
 
     private func finishCapture(_ activeCapture: ActiveCapture) throws -> Value {
+        do { return try completeCapture(activeCapture) }
+        catch {
+            self.activeCapture = nil
+            captureRefreshTask?.cancel()
+            captureRefreshTask = nil
+            storeCapture(.object(["manifest": .object([
+                "id": .string(activeCapture.id), "state": .string("failed"),
+                "targetId": activeCapture.targetID.map(Value.string) ?? .null,
+                "error": .string(String(describing: error))
+            ])]), id: activeCapture.id)
+            throw error
+        }
+    }
+
+    private func completeCapture(_ activeCapture: ActiveCapture) throws -> Value {
         guard let traceRecorder else {
             throw AdaMCPError.tracingUnavailable
         }
         let endedAt = Date()
         let spans = try traceRecorder.tracer.stopFileSession(expectedURL: activeCapture.fileURL)
-        let summary = Self.summaryValue(spans: spans, frameBudgetMilliseconds: activeCapture.frameBudgetMilliseconds)
+        let selectedSpans = activeCapture.targetID.map { targetID in
+            spans.filter { $0.objectValue?["attributes"]?.objectValue?["ada.profile.target_id"]?.stringValue == targetID }
+        } ?? spans
+        let summary = Self.summaryValue(spans: selectedSpans, frameBudgetMilliseconds: activeCapture.frameBudgetMilliseconds, targeted: activeCapture.targetID != nil)
         let manifest: Value = .object([
             "id": .string(activeCapture.id),
+            "targetId": activeCapture.targetID.map(Value.string) ?? .null,
             "preset": .string(activeCapture.preset),
             "state": .string("completed"),
             "startedAt": .string(Self.dateFormatter.string(from: activeCapture.startedAt)),
@@ -249,8 +289,8 @@ public final class AdaMCPProfiler {
         let capture: Value = .object([
             "manifest": manifest,
             "summary": summary,
-            "spans": .array(spans),
-            "trace": Self.traceEventValue(spans: spans),
+            "spans": .array(selectedSpans),
+            "trace": Self.traceEventValue(spans: selectedSpans),
             "artifacts": .array([])
         ])
 
@@ -277,6 +317,7 @@ public final class AdaMCPProfiler {
     private func activeCaptureValue(_ capture: ActiveCapture) -> Value {
         .object([
             "id": .string(capture.id),
+            "targetId": capture.targetID.map(Value.string) ?? .null,
             "preset": .string(capture.preset),
             "state": .string("recording"),
             "startedAt": .string(Self.dateFormatter.string(from: capture.startedAt)),
@@ -339,9 +380,12 @@ private extension AdaMCPProfiler {
         ])
     }
 
-    static func summaryValue(spans: [Value], frameBudgetMilliseconds: Double) -> Value {
+    static func summaryValue(spans: [Value], frameBudgetMilliseconds: Double, targeted: Bool = false) -> Value {
         let metrics = spans.compactMap(metricSpan)
-        let frames = metrics.filter { $0.category == "frame" && $0.parentSpanID == nil }
+        let frames = metrics.filter { $0.category == "frame" && (targeted
+            ? $0.attributes["ada.profile.frame_root"]?.boolValue == true : $0.parentSpanID == nil) }
+        let starts = frames.map(\.startNanoseconds).sorted()
+        let intervals = zip(starts, starts.dropFirst()).map { Double($1 - $0) / 1_000_000 }
         let systems = metrics.filter { $0.category == "system" }
         let renderNodes = metrics.filter { $0.category == "render_node" }
         let display = metrics.filter { $0.category == "display" }
@@ -352,6 +396,7 @@ private extension AdaMCPProfiler {
 
         return .object([
             "frameCount": .int(frames.count),
+            "updateRateHz": average(intervals).map { .double($0 > 0 ? 1000 / $0 : 0) } ?? .null,
             "fps": .double(average(frameDurations).map { $0 > 0 ? 1_000 / $0 : 0 } ?? 0),
             "frameTime": statisticsValue(frameDurations),
             "frameBudgetMs": .double(frameBudgetMilliseconds),
@@ -486,7 +531,7 @@ private extension AdaMCPProfiler {
         }
     }
 
-    static func currentResidentBytes() -> UInt64 {
+    internal static func currentResidentBytes() -> UInt64 {
         #if canImport(Darwin)
         var virtualMemoryInfo = task_vm_info_data_t()
         var virtualMemoryCount = mach_msg_type_number_t(

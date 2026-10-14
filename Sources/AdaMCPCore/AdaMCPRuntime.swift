@@ -13,6 +13,8 @@ public struct MCPServerConfiguration: Sendable {
     public let serverVersion: String
     public let instructions: String?
     public let registerTypes: (@MainActor (MCPIntrospectionRegistry) -> Void)?
+    public let additionalTools: (@MainActor @Sendable () -> [Tool])?
+    public let additionalToolHandler: (@MainActor @Sendable (String, [String: Value]) async -> CallTool.Result?)?
     public let captureOverride: RenderCaptureService.CaptureOverride?
     public let traceRecorder: AdaMCPTraceRecorder?
     public let enableDiscovery: Bool
@@ -28,6 +30,8 @@ public struct MCPServerConfiguration: Sendable {
         serverVersion: String = "0.1.0",
         instructions: String? = "Inspect live AdaEngine worlds, entities, resources, assets, and render captures.",
         registerTypes: (@MainActor (MCPIntrospectionRegistry) -> Void)? = nil,
+        additionalTools: (@MainActor @Sendable () -> [Tool])? = nil,
+        additionalToolHandler: (@MainActor @Sendable (String, [String: Value]) async -> CallTool.Result?)? = nil,
         captureOverride: RenderCaptureService.CaptureOverride? = nil,
         traceRecorder: AdaMCPTraceRecorder? = AdaMCPTraceRecorder(configuration: .init(continuousRecording: false)),
         enableDiscovery: Bool = true,
@@ -42,6 +46,8 @@ public struct MCPServerConfiguration: Sendable {
         self.serverVersion = serverVersion
         self.instructions = instructions
         self.registerTypes = registerTypes
+        self.additionalTools = additionalTools
+        self.additionalToolHandler = additionalToolHandler
         self.captureOverride = captureOverride
         self.traceRecorder = traceRecorder
         self.enableDiscovery = enableDiscovery
@@ -57,7 +63,9 @@ public final class AdaMCPRuntime {
     let renderCaptureService: RenderCaptureService
     let uiInspectionService: AdaUIInspectionService
     let traceRecorder: AdaMCPTraceRecorder?
-    let profiler: AdaMCPProfiler
+    private let additionalTools: (@MainActor @Sendable () -> [Tool])?
+    private let additionalToolHandler: (@MainActor @Sendable (String, [String: Value]) async -> CallTool.Result?)?
+    public let profiler: AdaMCPProfiler
     private let logger: Logger
 
     public init(
@@ -65,6 +73,8 @@ public final class AdaMCPRuntime {
         registry: MCPIntrospectionRegistry,
         renderCaptureService: RenderCaptureService,
         traceRecorder: AdaMCPTraceRecorder? = nil,
+        additionalTools: (@MainActor @Sendable () -> [Tool])? = nil,
+        additionalToolHandler: (@MainActor @Sendable (String, [String: Value]) async -> CallTool.Result?)? = nil,
         logger: Logger = Logger(label: "org.adaengine.mcp.runtime")
     ) {
         self.appWorlds = appWorlds
@@ -72,12 +82,14 @@ public final class AdaMCPRuntime {
         self.renderCaptureService = renderCaptureService
         self.uiInspectionService = AdaUIInspectionService(appWorlds: appWorlds)
         self.traceRecorder = traceRecorder
+        self.additionalTools = additionalTools
+        self.additionalToolHandler = additionalToolHandler
         self.profiler = AdaMCPProfiler(traceRecorder: traceRecorder)
         self.logger = logger
     }
 
     public func tools() -> [Tool] {
-        automationTools() + [
+        (additionalTools?() ?? []) + automationTools() + [
             Tool(
                 name: "world.list_worlds",
                 description: "List all live AdaEngine worlds.",
@@ -266,10 +278,17 @@ public final class AdaMCPRuntime {
                 annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
             ),
             Tool(
+                name: "profiler.list_targets",
+                description: "List embedded game profiling sessions and their stable target IDs.",
+                inputSchema: Self.objectSchema(),
+                annotations: .init(readOnlyHint: true)
+            ),
+            Tool(
                 name: "profiler.live_snapshot",
                 description: "Return bounded live frame, ECS, render, display, and process-memory metrics.",
                 inputSchema: Self.objectSchema(properties: [
                     "limit": .object(["type": "integer"]),
+                    "targetId": .object(["type": "string"]),
                     "frameBudgetMs": .object(["type": "number"])
                 ]),
                 annotations: .init(readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false)
@@ -278,6 +297,7 @@ public final class AdaMCPRuntime {
                 name: "profiler.start_capture",
                 description: "Start one bounded detailed profiler capture. CPU-first v1 supports the frame preset.",
                 inputSchema: Self.objectSchema(properties: [
+                    "targetId": .object(["type": "string"]),
                     "preset": .object(["type": "string", "enum": .array(["frame"].map(Value.string))]),
                     "durationMs": .object(["type": "integer"]),
                     "frameCount": .object(["type": "integer"]),
@@ -747,10 +767,13 @@ public final class AdaMCPRuntime {
                 payload = try await self.renderGraphDumpAttachmentPayload(arguments: arguments)
             case "profiler.capabilities":
                 payload = self.profiler.capabilitiesPayload()
+            case "profiler.list_targets":
+                payload = try self.profiler.performance.sessionsPayload()
             case "profiler.live_snapshot":
                 payload = try self.profiler.liveSnapshotPayload(
                     limit: arguments["limit"]?.intValue ?? 120,
-                    frameBudgetMilliseconds: arguments["frameBudgetMs"]?.doubleValue ?? 16.67
+                    frameBudgetMilliseconds: arguments["frameBudgetMs"]?.doubleValue ?? 16.67,
+                    targetID: arguments["targetId"]?.stringValue
                 )
             case "profiler.start_capture":
                 payload = try self.profiler.startCapture(arguments: arguments)
@@ -805,6 +828,9 @@ public final class AdaMCPRuntime {
             case "ui.tap_node":
                 payload = try self.uiTapNodePayload(arguments: arguments)
             default:
+                if let result = await additionalToolHandler?(name, arguments) {
+                    return result
+                }
                 return .init(content: [.text(text: "Unknown MCP tool '\(name)'.", annotations: nil, _meta: nil)], isError: true)
             }
 
