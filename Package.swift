@@ -67,6 +67,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log")
             ]
         ),
+        .testTarget(name: "MCPProtocolTests", dependencies: ["MCP"]),
         .testTarget(
             name: "AdaMCPTests",
             dependencies: [

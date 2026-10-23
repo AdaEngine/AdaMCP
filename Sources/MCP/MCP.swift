@@ -168,12 +168,15 @@ public struct Tool: Codable, Sendable, Equatable {
     public var description: String?
     public var inputSchema: Value
     public var annotations: Annotations?
+    /// Optional metadata advertised to clients through `tools/list`.
+    public var _meta: Metadata?
 
-    public init(name: String, description: String? = nil, inputSchema: Value, annotations: Annotations? = nil) {
+    public init(name: String, description: String? = nil, inputSchema: Value, annotations: Annotations? = nil, _meta: Metadata? = nil) {
         self.name = name
         self.description = description
         self.inputSchema = inputSchema
         self.annotations = annotations
+        self._meta = _meta
     }
 }
 
